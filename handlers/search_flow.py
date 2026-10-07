@@ -1,4 +1,5 @@
 import io
+import random
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,11 +11,13 @@ from database.queries import (
     add_template,
     upsert_user,
 )
-from handlers.meme_flow import MemeFlowSG
+from handlers.editor import EditorSG
 from services.search_engine import (
     hybrid_search_templates,
     get_external_template,
     fetch_external_image_bytes,
+    _fetch_imgflip_memes,
+    _EXTERNAL_REGISTRY,
 )
 
 router = Router(name="search_flow_router")
@@ -25,8 +28,8 @@ def build_template_choice_card(template: dict) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎨 মিম তৈরি করুন / Create", callback_data=f"btn_create:{t_id}"),
-                InlineKeyboardButton(text="📥 টেমপ্লেট ডাউনলোড / Raw", callback_data=f"btn_raw:{t_id}"),
+                InlineKeyboardButton(text="[Create Meme]", callback_data=f"btn_create:{t_id}"),
+                InlineKeyboardButton(text="[Download Raw]", callback_data=f"btn_raw:{t_id}"),
             ]
         ]
     )
@@ -36,8 +39,8 @@ def build_external_choice_card(ext_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🎨 মিম তৈরি করুন / Use Template", callback_data=f"btn_ext_use:{ext_id}"),
-                InlineKeyboardButton(text="📥 ডাউনলোড / Download", callback_data=f"btn_ext_dl:{ext_id}"),
+                InlineKeyboardButton(text="[Use Template]", callback_data=f"btn_ext_use:{ext_id}"),
+                InlineKeyboardButton(text="[Download]", callback_data=f"btn_ext_dl:{ext_id}"),
             ]
         ]
     )
@@ -47,61 +50,21 @@ async def cb_menu_search(callback: types.CallbackQuery):
     """Prompt user to type their search query."""
     await callback.answer()
     await callback.message.answer(
-        "🔍 <b>মিম সার্চ:</b>\n"
-        "আপনি যে মিম টেমপ্লেটটি খুঁজছেন তার নাম বা কি-ওয়ার্ড লিখে মেসেজ পাঠান।\n\n"
-        "<i>উদাহরণ:</i> <code>tony stark</code>, <code>drake</code>, <code>cat</code>, <code>doge</code>",
+        "<b>[SEARCH MEME TEMPLATES]</b>\n\n"
+        "Send the title, keywords, or characters of the template you are looking for.\n"
+        "Examples: <code>drake</code>, <code>tony stark</code>, <code>cheems</code>, <code>distracted boyfriend</code>",
         parse_mode="HTML",
     )
 
-@router.callback_query(F.data == "menu_browse")
-@router.message(Command("template", "templates"))
-async def handle_browse_templates(event: types.Message | types.CallbackQuery):
-    """Display catalog of available/trending meme templates."""
-    message = event if isinstance(event, types.Message) else event.message
-    if isinstance(event, types.CallbackQuery):
-        await event.answer()
-
-    templates = await get_all_templates(limit=8, offset=0)
-    if not templates:
-        await message.answer(
-            "📂 <b>টেমপ্লেট ক্যাটালগ খালি!</b>\n\n"
-            "অ্যাডমিন চ্যানেল থেকে নতুন টেমপ্লেট আপলোড করার সাথে সাথে এখানে পাওয়া যাবে।\n"
-            "💡 এছাড়াও আপনি <code>/search &lt;name&gt;</code> দিয়ে সরাসরি যেকোনো পাবলিক মিম খুঁজতে পারেন!",
-            parse_mode="HTML",
-        )
-        return
-
-    await message.answer("📁 <b>জনপ্রিয় ও ট্রেন্ডিং মিম টেমপ্লেট তালিকা:</b>", parse_mode="HTML")
-
-    for t in templates:
-        trending_badge = " 🔥" if t.get("is_trending") else ""
-        title = t.get("title") or t.get("name") or "Template"
-        caption = f"🎭 <b>{title}</b>{trending_badge}\n🏷️ <i>ট্যাগ: {t.get('tags', '')}</i>"
-        try:
-            await message.bot.send_photo(
-                chat_id=message.chat.id,
-                photo=t["file_id"],
-                caption=caption,
-                reply_markup=build_template_choice_card(t),
-                parse_mode="HTML",
-            )
-        except Exception:
-            await message.answer(
-                caption,
-                reply_markup=build_template_choice_card(t),
-                parse_mode="HTML",
-            )
-
 @router.message(Command("random"))
 async def handle_random_template(message: types.Message):
-    """Fetch and present a random meme template from the catalog."""
+    """Fetch and present a random meme template from local catalog or external fallback."""
     template = await get_random_template()
     if template:
         title = template.get("title") or template.get("name") or "Random Template"
         caption = (
-            f"🎲 <b>র্যান্ডম মিম টেমপ্লেট:</b>\n\n"
-            f"🎭 <b>{title}</b>\n"
-            f"🏷️ <i>ট্যাগ: {template.get('tags', '')}</i>"
+            f"<b>[RANDOM TEMPLATE: {title}]</b>\n"
+            f"Tags: {template.get('tags', 'None')}"
         )
         try:
             await message.bot.send_photo(
@@ -116,13 +79,10 @@ async def handle_random_template(message: types.Message):
             pass
 
     # Fallback to external random template if local library is empty
-    from services.search_engine import _fetch_imgflip_memes
-    import random
     memes = await _fetch_imgflip_memes()
     if memes:
         m = random.choice(memes)
         ext_id = f"ext_if_{m['id']}"
-        from services.search_engine import _EXTERNAL_REGISTRY
         _EXTERNAL_REGISTRY[ext_id] = {
             "id": ext_id,
             "title": m["name"],
@@ -132,9 +92,8 @@ async def handle_random_template(message: types.Message):
             "source": "Imgflip",
         }
         caption = (
-            f"🎲 <b>র্যান্ডম পাবলিক মিম টেমপ্লেট:</b>\n\n"
-            f"🎭 <b>{m['name']}</b>\n"
-            f"🌐 <i>উৎস: Imgflip</i>"
+            f"<b>[RANDOM PUBLIC TEMPLATE: {m['name']}]</b>\n"
+            f"Source: Imgflip"
         )
         try:
             await message.bot.send_photo(
@@ -148,14 +107,14 @@ async def handle_random_template(message: types.Message):
         except Exception:
             pass
 
-    await message.answer("⚠️ বর্তমানে কোনো টেমপ্লেট পাওয়া যায়নি। কিছু সময় পর আবার চেষ্টা করুন।")
+    await message.answer("[Info: No templates currently available. Upload one using /add_template]")
 
 @router.message(Command("search"))
 async def handle_search_command(message: types.Message):
     """Handle /search <keyword> command."""
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        await message.answer("অনুগ্রহ করে সার্চ কি-ওয়ার্ড লিখুন। যেমন: <code>/search drake</code>", parse_mode="HTML")
+        await message.answer("[Usage: /search <keyword>. Example: /search drake]")
         return
 
     query = parts[1].strip()
@@ -171,36 +130,32 @@ async def handle_text_search_fallback(message: types.Message):
 
 async def process_search_query(message: types.Message, query: str):
     """Run hybrid search engine (local + external fallback) and present results."""
-    wait_msg = await message.answer(f"🔍 <b>'{query}'</b> এর জন্য টেমপ্লেট খোঁজা হচ্ছে...", parse_mode="HTML")
+    wait_msg = await message.answer(f"[Searching templates for: '{query}'...]")
     search_data = await hybrid_search_templates(query, limit=4)
-    await wait_msg.delete()
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
 
-    local_results = search_data["local"]
-    external_results = search_data["external"]
+    local_results = search_data.get("local", [])
+    external_results = search_data.get("external", [])
 
     if not local_results and not external_results:
         await message.answer(
-            f"❌ <b>'{query}'</b> এর সাথে মিলে এমন কোনো টেমপ্লেট পাওয়া যায়নি।\n\n"
-            f"💡 অন্য কোনো কি-ওয়ার্ড দিয়ে খুঁজুন অথবা /template ব্রাউজ করুন।",
-            parse_mode="HTML",
+            f"[No templates found matching '{query}'. Try another search query or use /template.]"
         )
         return
 
-    await message.answer(
-        f"🎯 <b>'{query}'</b> এর জন্য সেরা ফলাফলসমূহ:\n"
-        f"নিচে থেকে আপনার কাঙ্ক্ষিত মিমটি নির্বাচন করুন:",
-        parse_mode="HTML",
-    )
+    await message.answer(f"<b>[SEARCH RESULTS FOR: '{query}']</b>", parse_mode="HTML")
 
     # 1. Present local catalog matches
     for candidate in local_results:
         score_pct = int(candidate.get("search_score", 0.0) * 100)
-        trending_badge = " 🔥" if candidate.get("is_trending") else ""
         title = candidate.get("title") or candidate.get("name") or "Template"
         caption = (
-            f"🎭 <b>{title}</b>{trending_badge}\n"
-            f"🎯 <i>ম্যাচ স্কোর: {score_pct}%</i>\n"
-            f"🏷️ <i>ট্যাগ: {candidate.get('tags', '')}</i>"
+            f"<b>{title}</b>\n"
+            f"• Match Score: {score_pct}%\n"
+            f"• Tags: {candidate.get('tags', 'None')}"
         )
 
         try:
@@ -223,9 +178,8 @@ async def process_search_query(message: types.Message, query: str):
         title = ext_item.get("title") or ext_item.get("name") or "External Meme"
         source = ext_item.get("source", "Public Web")
         caption = (
-            f"🌐 <b>{title}</b>\n"
-            f"📦 <i>উৎস: {source} (পাবলিক টেমপ্লেট)</i>\n"
-            f"💡 <i>ক্লিক করে মুহূর্তেই মিম তৈরি বা ডাউনলোড করুন</i>"
+            f"<b>{title}</b>\n"
+            f"• Source: {source} (Public Repository)"
         )
         try:
             await message.bot.send_photo(
@@ -255,16 +209,16 @@ async def handle_external_use_template(callback: types.CallbackQuery, state: FSM
     ext_id = callback.data.split(":", 1)[1]
     ext_item = get_external_template(ext_id)
     if not ext_item:
-        await callback.answer("টেমপ্লেটের তথ্য পাওয়া যায়নি। অনুগ্রহ করে আবার সার্চ করুন।", show_alert=True)
+        await callback.answer("[Error: Template details unavailable. Please search again.]", show_alert=True)
         return
 
-    await callback.answer("⏳ টেমপ্লেট প্রস্তুত করা হচ্ছে...")
-    status_msg = await callback.message.answer("⏳ <b>অনলাইন টেমপ্লেট ডাউনলোড ও প্রসেস করা হচ্ছে...</b>", parse_mode="HTML")
+    await callback.answer("[Preparing external template...]")
+    status_msg = await callback.message.answer("[Downloading and caching online template in-memory...]")
 
     # Fetch image bytes in memory
     img_bytes = await fetch_external_image_bytes(ext_item["url"])
     if not img_bytes:
-        await status_msg.edit_text("❌ টেমপ্লেটটি ডাউনলোড করা সম্ভব হয়নি। অনুগ্রহ করে অন্যটি নির্বাচন করুন।")
+        await status_msg.edit_text("[Error: Failed to fetch external image file.]")
         return
 
     # Upload to Telegram to obtain canonical file_id
@@ -272,12 +226,14 @@ async def handle_external_use_template(callback: types.CallbackQuery, state: FSM
     input_file = BufferedInputFile(img_bytes, filename="template.jpg")
     sent = await callback.message.answer_photo(
         photo=input_file,
-        caption=f"✅ <b>{title}</b> প্রস্তুত করা হয়েছে!",
-        parse_mode="HTML",
+        caption=f"[Template Ready: {title}]",
     )
     file_id = sent.photo[-1].file_id
     file_unique_id = sent.photo[-1].file_unique_id
-    await status_msg.delete()
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
 
     # Save to local SQLite database catalog for zero-disk permanent caching
     template_id = await add_template(
@@ -289,28 +245,44 @@ async def handle_external_use_template(callback: types.CallbackQuery, state: FSM
         tags=f"external, {ext_item.get('source', '')}",
         source_channel_id="external_api",
         source_channel_title=ext_item.get("source", "External"),
+        added_by=callback.from_user.id,
     )
 
-    # Initialize FSM State
-    await upsert_user(callback.from_user.id)
+    # Initialize EditorSG State
+    user = await upsert_user(callback.from_user.id)
+    preferred_font = user.get("preferred_font")
+    if preferred_font == "default" or not preferred_font:
+        preferred_font = None
+
+    await state.clear()
     await state.update_data(
         template_id=template_id,
         file_id=file_id,
-        media_type="photo",
-        template_name=title,
-        font_key="Impact.ttf",
-        variant="white_header",
-        watermark_pos="bottom_right",
-        has_banner=False,
+        title=title,
+        font_key=preferred_font,
+        variant="overlay",
+        text_color="white",
+        stroke_width=4,
+        case_mode="raw",
+        filter="none",
+        watermark_enabled=bool(user.get("watermark_enabled", 1)),
+        watermark_pos=user.get("watermark_position", "bottom_right"),
+        watermark_scale=user.get("watermark_scale", 1.0),
+        watermark_opacity=user.get("watermark_opacity", 0.8),
+        is_clean=False,
     )
-    await state.set_state(MemeFlowSG.waiting_for_text)
+    await state.set_state(EditorSG.waiting_for_text)
+
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="[Cancel]", callback_data="ed_cancel")]]
+    )
 
     await callback.message.answer(
-        f"✍️ <b>'{title}'</b> নির্বাচিত হয়েছে!\n\n"
-        f"এখন আপনার মিমের জন্য <b>টেক্সট / ক্যাপশন</b> লিখে পাঠান:\n\n"
-        f"💡 <i>টিপ: ক্লাসিক স্টাইলের ক্ষেত্রে উপরে ও নিচের টেক্সট আলাদা করতে <code>|</code> চিহ্ন ব্যবহার করুন।</i>\n"
-        f"<i>(যেমন: <code>উপরে লেখা | নিচে লেখা</code>)</i>",
-        parse_mode="HTML",
+        f"[Meme Editor - Selected: '{title}']\n"
+        f"Enter the text for your meme.\n\n"
+        f"Tip: Use '|' to divide top and bottom lines for overlay memes.\n"
+        f"(Example: 'TOP TEXT | BOTTOM TEXT')",
+        reply_markup=cancel_kb,
     )
 
 @router.callback_query(F.data.startswith("btn_ext_dl:"))
@@ -319,13 +291,13 @@ async def handle_external_download_template(callback: types.CallbackQuery):
     ext_id = callback.data.split(":", 1)[1]
     ext_item = get_external_template(ext_id)
     if not ext_item:
-        await callback.answer("টেমপ্লেটের তথ্য পাওয়া যায়নি।", show_alert=True)
+        await callback.answer("[Error: Template details unavailable.]", show_alert=True)
         return
 
-    await callback.answer("📥 ডাউনলোড হচ্ছে...")
+    await callback.answer("[Downloading template...]")
     img_bytes = await fetch_external_image_bytes(ext_item["url"])
     if not img_bytes:
-        await callback.message.answer("❌ টেমপ্লেটটি ডাউনলোড করা সম্ভব হয়নি।")
+        await callback.message.answer("[Error: Failed to download template image.]")
         return
 
     title = ext_item.get("title") or ext_item.get("name") or "Template"
@@ -334,11 +306,9 @@ async def handle_external_download_template(callback: types.CallbackQuery):
 
     await callback.message.answer_photo(
         photo=file_photo,
-        caption=f"📷 <b>{title}</b> (Preview)",
-        parse_mode="HTML",
+        caption=f"[Preview: {title}]",
     )
     await callback.message.answer_document(
         document=file_doc,
-        caption=f"📁 <b>{title}</b> (Original Image)",
-        parse_mode="HTML",
+        caption=f"[Original File: {title}]",
     )

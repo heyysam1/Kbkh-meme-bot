@@ -119,7 +119,16 @@ class FontManager:
         return [(k, self._display_names[k]) for k in self._fonts.keys()]
 
     def load_font(self, font_path: Path, size: int) -> ImageFont.FreeTypeFont:
-        """Defensively load ImageFont with fallback to default fonts on error."""
+        """Defensively load ImageFont with RAQM complex script engine and fallback."""
+        from PIL import features
+        if features.check("raqm"):
+            layout = getattr(ImageFont.Layout, "RAQM", None)
+            if layout is not None:
+                try:
+                    return ImageFont.truetype(str(font_path), size, layout_engine=layout)
+                except Exception:
+                    pass
+
         try:
             return ImageFont.truetype(str(font_path), size)
         except Exception:
@@ -128,6 +137,7 @@ class FontManager:
                 return ImageFont.truetype(str(fallback_path), size)
             except Exception:
                 return ImageFont.load_default()
+
 
 # Singleton font manager instance
 font_manager = FontManager()

@@ -23,8 +23,11 @@ async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str
     async with get_db() as conn:
         await conn.execute(
             """
-            INSERT INTO users (user_id, preferred_font, watermark_file_id, watermark_enabled, watermark_position)
-            VALUES (?, ?, NULL, 0, 'bottom_right');
+            INSERT INTO users (
+                user_id, preferred_font, watermark_file_id, watermark_text,
+                watermark_enabled, watermark_position, watermark_scale, watermark_opacity
+            )
+            VALUES (?, ?, NULL, NULL, 0, 'bottom_right', 1.0, 0.8);
             """,
             (user_id, preferred_font),
         )
@@ -34,8 +37,11 @@ async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str
         "user_id": user_id,
         "preferred_font": preferred_font,
         "watermark_file_id": None,
+        "watermark_text": None,
         "watermark_enabled": 0,
         "watermark_position": "bottom_right",
+        "watermark_scale": 1.0,
+        "watermark_opacity": 0.8,
     }
 
 async def update_user_font(user_id: int, font_key: str) -> None:
@@ -89,6 +95,42 @@ async def set_watermark_position(user_id: int, position: str) -> None:
         )
         await conn.commit()
 
+async def update_user_watermark_settings(
+    user_id: int,
+    scale: Optional[float] = None,
+    opacity: Optional[float] = None,
+    position: Optional[str] = None,
+    text: Optional[str] = None,
+    enabled: Optional[int] = None,
+) -> None:
+    """Update advanced watermark settings for a user."""
+    await upsert_user(user_id)
+    fields = []
+    params = []
+    if scale is not None:
+        fields.append("watermark_scale = ?")
+        params.append(scale)
+    if opacity is not None:
+        fields.append("watermark_opacity = ?")
+        params.append(opacity)
+    if position is not None:
+        fields.append("watermark_position = ?")
+        params.append(position)
+    if text is not None:
+        fields.append("watermark_text = ?")
+        params.append(text)
+    if enabled is not None:
+        fields.append("watermark_enabled = ?")
+        params.append(enabled)
+
+    if fields:
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(user_id)
+        sql = f"UPDATE users SET {', '.join(fields)} WHERE user_id = ?;"
+        async with get_db() as conn:
+            await conn.execute(sql, tuple(params))
+            await conn.commit()
+
 # ------------------------------------------------------------------------------
 # Template Operations
 # ------------------------------------------------------------------------------
@@ -112,17 +154,18 @@ async def add_template(
     file_unique_id: Optional[str] = None,
     media_type: str = "photo",
     title: Optional[str] = None,
+    added_by: Optional[int] = None,
     source_channel_id: Optional[str] = None,
     source_channel_title: Optional[str] = None,
 ) -> int:
-    """Register or update a meme template with its Telegram file_id, media_type, and tags."""
+    """Register or update a meme template with its Telegram file_id, media_type, tags, and creator."""
     clean_file_id = file_id.strip()
     resolved_title = (title or name or "Template").strip()
     resolved_name = (name or title or "Template").strip()
     tags_str = (tags or "").strip()
 
     async with get_db() as conn:
-        # Check if template already exists by file_id to prevent constraint crash
+        # Check if template already exists by file_id
         async with conn.execute(
             "SELECT id FROM templates WHERE file_id = ?;", (clean_file_id,)
         ) as cursor:
@@ -133,7 +176,8 @@ async def add_template(
                     """
                     UPDATE templates
                     SET title = ?, name = ?, tags = ?, file_unique_id = COALESCE(?, file_unique_id),
-                        media_type = ?, source_channel_id = COALESCE(?, source_channel_id),
+                        media_type = ?, added_by = COALESCE(?, added_by),
+                        source_channel_id = COALESCE(?, source_channel_id),
                         source_channel_title = COALESCE(?, source_channel_title)
                     WHERE id = ?;
                     """,
@@ -143,6 +187,7 @@ async def add_template(
                         tags_str,
                         file_unique_id,
                         media_type,
+                        added_by,
                         source_channel_id,
                         source_channel_title,
                         t_id,
@@ -155,9 +200,9 @@ async def add_template(
             """
             INSERT INTO templates (
                 file_id, file_unique_id, media_type, title, name, tags,
-                source_channel_id, source_channel_title, is_trending, usage_count
+                added_by, source_channel_id, source_channel_title, is_trending, usage_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0);
             """,
             (
                 clean_file_id,
@@ -166,6 +211,7 @@ async def add_template(
                 resolved_title,
                 resolved_name,
                 tags_str,
+                added_by,
                 source_channel_id,
                 source_channel_title,
                 1 if is_trending else 0,
@@ -196,6 +242,17 @@ async def get_all_templates(limit: int = 50, offset: int = 0) -> List[Dict[str, 
         ) as cursor:
             rows = await cursor.fetchall()
             return [_format_template_dict(r) for r in rows]
+
+async def get_templates_paginated(limit: int = 6, offset: int = 0) -> List[Dict[str, Any]]:
+    """Fetch paginated batch of templates for multi-column grid rendering."""
+    return await get_all_templates(limit=limit, offset=offset)
+
+async def get_templates_count() -> int:
+    """Return total number of registered meme templates."""
+    async with get_db() as conn:
+        async with conn.execute("SELECT COUNT(*) as cnt FROM templates;") as cursor:
+            row = await cursor.fetchone()
+            return row["cnt"] if row else 0
 
 async def get_trending_templates(limit: int = 10) -> List[Dict[str, Any]]:
     """Fetch high-scoring trending meme templates."""
@@ -245,7 +302,6 @@ async def add_banner(name: str, file_id: str, is_default: int = 0) -> int:
     """Add a promotional banner to the database."""
     async with get_db() as conn:
         if is_default:
-            # Demote any other default banner
             await conn.execute("UPDATE banners SET is_default = 0;")
         cursor = await conn.execute(
             "INSERT INTO banners (name, file_id, is_default) VALUES (?, ?, ?);",
@@ -327,3 +383,37 @@ async def get_all_aliases() -> List[Dict[str, Any]]:
         async with conn.execute("SELECT * FROM aliases ORDER BY alias_term ASC;") as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+# ------------------------------------------------------------------------------
+# External Source Operations (Admin-Managed Meme Repositories)
+# ------------------------------------------------------------------------------
+
+async def add_source(url: str, name: Optional[str] = None) -> int:
+    """Register or update an external meme API / feed source."""
+    clean_url = url.strip()
+    source_name = (name or clean_url).strip()
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            """
+            INSERT INTO sources (url, name, is_active)
+            VALUES (?, ?, 1)
+            ON CONFLICT(url) DO UPDATE SET name = excluded.name, is_active = 1;
+            """,
+            (clean_url, source_name),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+async def get_all_sources() -> List[Dict[str, Any]]:
+    """Retrieve all configured external sources."""
+    async with get_db() as conn:
+        async with conn.execute("SELECT * FROM sources ORDER BY id DESC;") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def remove_source(source_id: int) -> bool:
+    """Remove an external meme feed source."""
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM sources WHERE id = ?;", (source_id,))
+        await conn.commit()
+        return True

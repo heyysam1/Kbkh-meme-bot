@@ -8,11 +8,17 @@ from database.queries import (
     add_template,
     get_template_by_id,
     get_random_template,
+    get_templates_paginated,
+    get_templates_count,
     increment_template_usage,
     update_user_font,
     get_user,
     add_alias,
     resolve_alias,
+    add_source,
+    get_all_sources,
+    remove_source,
+    update_user_watermark_settings,
 )
 
 
@@ -40,8 +46,15 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("file_unique_id", cols)
                 self.assertIn("title", cols)
                 self.assertIn("source_channel_id", cols)
+                self.assertIn("added_by", cols)
 
-        # 2. Template CRUD with multi-mime & metadata
+            async with conn.execute("PRAGMA table_info(users);") as cursor:
+                user_cols = {row[1] for row in await cursor.fetchall()}
+                self.assertIn("watermark_scale", user_cols)
+                self.assertIn("watermark_opacity", user_cols)
+                self.assertIn("watermark_text", user_cols)
+
+        # 2. Template CRUD with multi-mime & metadata & added_by
         tid = await add_template(
             file_id="tg_file_id_123",
             name="Leonardo DiCaprio Laughing",
@@ -51,6 +64,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
             media_type="photo",
             source_channel_id="-1001234567890",
             source_channel_title="Meme Archives",
+            added_by=12345678,
         )
         self.assertGreater(tid, 0)
 
@@ -60,6 +74,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(template["title"], "Leonardo DiCaprio Laughing")
         self.assertEqual(template["media_type"], "photo")
         self.assertEqual(template["source_channel_id"], "-1001234567890")
+        self.assertEqual(template["added_by"], 12345678)
         self.assertEqual(template["usage_count"], 0)
 
         # Increment usage
@@ -73,25 +88,59 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
             title="Funny Dancing Cat",
             tags="cat dance funny",
             media_type="video",
+            added_by=87654321,
         )
         vid_template = await get_template_by_id(vid_id)
         self.assertEqual(vid_template["media_type"], "video")
 
-        # 4. Random template
+        # 4. Pagination & Count
+        total_count = await get_templates_count()
+        self.assertEqual(total_count, 2)
+        page1 = await get_templates_paginated(limit=1, offset=0)
+        self.assertEqual(len(page1), 1)
+
+        # 5. Random template
         random_t = await get_random_template()
         self.assertIsNotNone(random_t)
         self.assertIn(random_t["id"], [tid, vid_id])
 
-        # 5. User Preferences CRUD
+        # 6. User Preferences & Advanced Watermark CRUD
         await update_user_font(user_id=999, font_key="Kalpurush")
+        await update_user_watermark_settings(
+            user_id=999,
+            scale=1.5,
+            opacity=0.75,
+            position="top_right",
+            text="@mywatermark",
+            enabled=1,
+        )
         user = await get_user(999)
         self.assertIsNotNone(user)
         self.assertEqual(user["preferred_font"], "Kalpurush")
+        self.assertEqual(user["watermark_scale"], 1.5)
+        self.assertEqual(user["watermark_opacity"], 0.75)
+        self.assertEqual(user["watermark_position"], "top_right")
+        self.assertEqual(user["watermark_text"], "@mywatermark")
+        self.assertEqual(user["watermark_enabled"], 1)
 
-        # 6. Alias Mapping
+        # 7. Alias Mapping
         await add_alias("leo laugh", "Leonardo DiCaprio Laughing")
         canonical = await resolve_alias("leo laugh")
         self.assertEqual(canonical, "Leonardo DiCaprio Laughing")
+
+        # 8. External Sources CRUD
+        sid = await add_source("https://api.imgflip.com/get_memes", "Imgflip Memes")
+        self.assertGreater(sid, 0)
+        sources = await get_all_sources()
+        self.assertEqual(len(sources), 1)
+        self.assertEqual(sources[0]["url"], "https://api.imgflip.com/get_memes")
+        self.assertEqual(sources[0]["name"], "Imgflip Memes")
+
+        # Remove source
+        removed = await remove_source(sid)
+        self.assertTrue(removed)
+        sources_after = await get_all_sources()
+        self.assertEqual(len(sources_after), 0)
 
 
 if __name__ == "__main__":

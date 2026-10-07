@@ -4,11 +4,15 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 import config
 from services.font_manager import font_manager
+from services.effects import apply_filter
 from services.renderer import (
     _calculate_average_luminance,
     _wrap_text_to_width,
-    _fit_text,
     _sync_render_worker,
+    VARIANT_OVERLAY,
+    VARIANT_TOP_BANNER,
+    VARIANT_BOTTOM_BANNER,
+    VARIANT_BREAKING_NEWS,
 )
 
 
@@ -49,71 +53,118 @@ class TestRenderer(unittest.TestCase):
             bbox = draw.multiline_textbbox((0, 0), line, font=font)
             self.assertTrue((bbox[2] - bbox[0]) <= 200 or len(line.split()) == 1)
 
-    def test_render_variants(self):
+    def test_all_layout_variants(self):
         template_bytes = self._create_sample_image(500, 400)
         font_path = font_manager.get_font_path(script="bengali")
 
-        # Variant A: White Header
-        buf_a = _sync_render_worker(
+        # 1. Overlay
+        buf_ov = _sync_render_worker(
             template_bytes=template_bytes,
-            text="টেস্টিং বাংলা মিম টেক্সট",
+            text="শীর্ষ টেক্সট | নিচের টেক্সট",
             font_path=font_path,
-            variant="white_header",
+            variant=VARIANT_OVERLAY,
+            is_clean=True,
+            text_color="yellow",
+            stroke_width=5,
+        )
+        self.assertIsInstance(buf_ov, io.BytesIO)
+        img_ov = Image.open(buf_ov)
+        self.assertEqual(img_ov.size, (500, 400))
+
+        # 2. Top Banner
+        buf_tb = _sync_render_worker(
+            template_bytes=template_bytes,
+            text="Top Banner Caption Line",
+            font_path=font_path,
+            variant=VARIANT_TOP_BANNER,
             is_clean=True,
         )
-        self.assertIsInstance(buf_a, io.BytesIO)
-        img_a = Image.open(buf_a)
-        self.assertEqual(img_a.size[0], 500)
-        self.assertGreater(img_a.size[1], 400)
+        img_tb = Image.open(buf_tb)
+        self.assertEqual(img_tb.size[0], 500)
+        self.assertGreater(img_tb.size[1], 400)
 
-        # Variant B: Dark Header
-        buf_b = _sync_render_worker(
+        # 3. Bottom Banner
+        buf_bb = _sync_render_worker(
             template_bytes=template_bytes,
-            text="Dark Header Variant Test",
+            text="Bottom Banner Caption Line",
             font_path=font_path,
-            variant="dark_header",
+            variant=VARIANT_BOTTOM_BANNER,
             is_clean=True,
         )
-        img_b = Image.open(buf_b)
-        self.assertEqual(img_b.size[0], 500)
-        self.assertGreater(img_b.size[1], 400)
+        img_bb = Image.open(buf_bb)
+        self.assertEqual(img_bb.size[0], 500)
+        self.assertGreater(img_bb.size[1], 400)
 
-        # Variant C: Classic Overlay (split with |)
-        buf_c = _sync_render_worker(
+        # 4. Breaking News
+        buf_bn = _sync_render_worker(
             template_bytes=template_bytes,
-            text="TOP TEXT | BOTTOM TEXT",
+            text="BREAKING: HIGH PRECISION MEME RENDERED",
             font_path=font_path,
-            variant="classic_overlay",
+            variant=VARIANT_BREAKING_NEWS,
             is_clean=True,
         )
-        img_c = Image.open(buf_c)
-        self.assertEqual(img_c.size[0], 500)
-        self.assertEqual(img_c.size[1], 400)
+        img_bn = Image.open(buf_bn)
+        self.assertEqual(img_bn.size, (500, 400))
 
-    def test_banner_extension(self):
+    def test_casing_and_colors(self):
         template_bytes = self._create_sample_image(400, 300)
-        banner_bytes = self._create_sample_image(800, 150)
         font_path = font_manager.get_font_path(script="english")
 
-        buf_with_banner = _sync_render_worker(
-            template_bytes=template_bytes,
-            text="With Banner Test",
-            font_path=font_path,
-            variant="white_header",
-            banner_bytes=banner_bytes,
-        )
-        img_with_banner = Image.open(buf_with_banner)
+        for color_name in ["white", "black", "yellow", "red", "cyan"]:
+            buf = _sync_render_worker(
+                template_bytes=template_bytes,
+                text="color test",
+                font_path=font_path,
+                variant=VARIANT_OVERLAY,
+                text_color=color_name,
+                case_mode="upper",
+                is_clean=True,
+            )
+            self.assertIsInstance(buf, io.BytesIO)
 
-        buf_no_banner = _sync_render_worker(
-            template_bytes=template_bytes,
-            text="With Banner Test",
-            font_path=font_path,
-            variant="white_header",
-            banner_bytes=None,
-        )
-        img_no_banner = Image.open(buf_no_banner)
+    def test_canvas_filters(self):
+        img = Image.new("RGB", (100, 100), (120, 80, 200))
 
-        self.assertGreater(img_with_banner.size[1], img_no_banner.size[1])
+        # Deepfry
+        fry = apply_filter(img, "deepfry")
+        self.assertEqual(fry.size, (100, 100))
+
+        # Grayscale
+        gray = apply_filter(img, "grayscale")
+        self.assertEqual(gray.size, (100, 100))
+
+        # Invert
+        inv = apply_filter(img, "invert")
+        self.assertEqual(inv.size, (100, 100))
+        # Inverted color of (120, 80, 200) should be (135, 175, 55)
+        pixel = inv.getpixel((50, 50))
+        self.assertEqual(pixel, (255 - 120, 255 - 80, 255 - 200))
+
+    def test_watermark_suite(self):
+        template_bytes = self._create_sample_image(600, 600)
+        font_path = font_manager.get_font_path(script="english")
+
+        # Create transparent PNG watermark
+        wm_buf = io.BytesIO()
+        wm_img = Image.new("RGBA", (100, 100), (255, 0, 0, 200))
+        wm_img.save(wm_buf, format="PNG")
+        wm_bytes = wm_buf.getvalue()
+
+        # Test positions and scaling
+        for pos in ["bottom_right", "bottom_left", "top_left", "top_right", "bottom_center"]:
+            buf = _sync_render_worker(
+                template_bytes=template_bytes,
+                text="Watermark Test",
+                font_path=font_path,
+                variant=VARIANT_OVERLAY,
+                watermark_bytes=wm_bytes,
+                watermark_pos=pos,
+                watermark_scale=1.5,
+                watermark_opacity=0.5,
+                watermark_enabled=True,
+                is_clean=False,
+            )
+            self.assertIsInstance(buf, io.BytesIO)
 
 
 if __name__ == "__main__":

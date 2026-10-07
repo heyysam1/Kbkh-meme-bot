@@ -3,14 +3,55 @@ import io
 import math
 import textwrap
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from PIL import Image, ImageDraw, ImageFont
 import config
+from services.effects import apply_filter
 from services.font_manager import font_manager
 
 # Security (CWE-409): Restrict decompression threshold to ~25 Megapixels (e.g. 5000x5000)
 # to protect memory-constrained containers (512MB RAM) from OOM kill.
 Image.MAX_IMAGE_PIXELS = 25_000_000
+
+# Canonical Layout Variants
+VARIANT_OVERLAY = "overlay"
+VARIANT_TOP_BANNER = "top_banner"
+VARIANT_BOTTOM_BANNER = "bottom_banner"
+VARIANT_BREAKING_NEWS = "breaking_news"
+
+# Color Presets Map
+COLOR_PRESETS = {
+    "white": (255, 255, 255),
+    "black": (0, 0, 0),
+    "yellow": (255, 230, 0),
+    "red": (255, 34, 34),
+    "cyan": (0, 229, 255),
+    "#ffffff": (255, 255, 255),
+    "#000000": (0, 0, 0),
+    "#ffe600": (255, 230, 0),
+    "#ff2222": (255, 34, 34),
+    "#00e5ff": (0, 229, 255),
+}
+
+def parse_color(color_val: Union[str, Tuple[int, int, int]]) -> Tuple[int, int, int]:
+    """Parse color preset, hex string, or RGB tuple into (R, G, B)."""
+    if isinstance(color_val, tuple) and len(color_val) >= 3:
+        return (color_val[0], color_val[1], color_val[2])
+
+    if isinstance(color_val, str):
+        c_str = color_val.lower().strip()
+        if c_str in COLOR_PRESETS:
+            return COLOR_PRESETS[c_str]
+        if c_str.startswith("#") and len(c_str) == 7:
+            try:
+                r = int(c_str[1:3], 16)
+                g = int(c_str[3:5], 16)
+                b = int(c_str[5:7], 16)
+                return (r, g, b)
+            except ValueError:
+                pass
+
+    return (255, 255, 255)
 
 def _calculate_average_luminance(im_rgb: Image.Image, box: Tuple[int, int, int, int]) -> float:
     """
@@ -25,7 +66,14 @@ def _calculate_average_luminance(im_rgb: Image.Image, box: Tuple[int, int, int, 
     total_lum = sum(0.299 * p[0] + 0.587 * p[1] + 0.114 * p[2] for p in pixels)
     return total_lum / len(pixels)
 
-
+def _apply_casing(text: str, case_mode: str) -> str:
+    """Apply case transformation: 'raw', 'upper', or 'title'."""
+    mode = case_mode.lower().strip()
+    if mode in ("upper", "uppercase"):
+        return text.upper()
+    elif mode in ("title", "titlecase"):
+        return text.title()
+    return text
 
 def _wrap_text_to_width(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> str:
     """
@@ -69,7 +117,6 @@ def _fit_text(
     fits within both max_width and max_height safely.
     Includes safeguards against runaway CPU loops.
     """
-    # Guard against excessively long word sequences
     words = text.split()
     if len(words) > 100:
         text = " ".join(words[:100])
@@ -92,7 +139,6 @@ def _fit_text(
         step = 4 if current_size > 44 else 2
         current_size -= step
 
-    # Return minimum size result with truncation if still overflowing
     font = font_manager.load_font(font_path, min_size)
     wrapped = _wrap_text_to_width(text, font, max_width, draw)
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=int(min_size * 0.2))
@@ -102,10 +148,18 @@ def _sync_render_worker(
     template_bytes: bytes,
     text: str,
     font_path: Path,
-    variant: str = "white_header",
+    variant: str = "overlay",
     is_clean: bool = False,
+    text_color: str = "white",
+    stroke_width: int = 4,
+    filter_name: str = "none",
+    case_mode: str = "raw",
     watermark_bytes: Optional[bytes] = None,
+    watermark_text: Optional[str] = None,
     watermark_pos: str = "bottom_right",
+    watermark_scale: float = 1.0,
+    watermark_opacity: float = 0.8,
+    watermark_enabled: bool = True,
     banner_bytes: Optional[bytes] = None,
 ) -> io.BytesIO:
     """
@@ -116,12 +170,16 @@ def _sync_render_worker(
     base_image = Image.open(io.BytesIO(template_bytes)).convert("RGB")
     w, h = base_image.size
 
-    # Security: Downscale excessively large template images to prevent container OOM
+    # Downscale excessively large template images to prevent container OOM
     MAX_CANVAS_DIM = 2560
     if w > MAX_CANVAS_DIM or h > MAX_CANVAS_DIM:
         base_image.thumbnail((MAX_CANVAS_DIM, MAX_CANVAS_DIM), Image.Resampling.LANCZOS)
         w, h = base_image.size
 
+    # Apply Visual Effect / Filter
+    base_image = apply_filter(base_image, filter_name)
+
+    # Padding and text sizing calculations
     padding = max(16, round(w * 0.025))
     max_text_width = w - (2 * padding)
     initial_font_size = max(24, min(96, round(w * 0.055)))
@@ -130,69 +188,153 @@ def _sync_render_worker(
     dummy_img = Image.new("RGB", (10, 10))
     dummy_draw = ImageDraw.Draw(dummy_img)
 
-    # 2. Text layout & Variant Rendering
-    cleaned_text = text.strip()
+    # Clean and case-transform text
+    cleaned_text = _apply_casing(text.strip() if text else "...", case_mode)
     if not cleaned_text:
         cleaned_text = "..."
 
-    # Normalize variant key
+    # Parse colors and stroke parameters
+    parsed_text_color = parse_color(text_color)
+    is_bright_text = (0.299 * parsed_text_color[0] + 0.587 * parsed_text_color[1] + 0.114 * parsed_text_color[2]) >= 128
+    default_stroke_fill = (0, 0, 0) if is_bright_text else (255, 255, 255)
+
     variant_key = variant.lower().strip()
 
-    if variant_key == "classic_overlay":
-        # Variant C: Classic Impact Overlay on template canvas
+    # --------------------------------------------------------------------------
+    # Layout Variants
+    # --------------------------------------------------------------------------
+
+    if variant_key in ("overlay", "classic_overlay", "variant_c"):
+        # Variant: Classic Overlay directly on the canvas
         canvas = base_image.copy()
         draw = ImageDraw.Draw(canvas)
 
-        # Check for top and bottom split via '|'
         parts = [p.strip() for p in cleaned_text.split("|", 1)]
         top_text = parts[0]
         bottom_text = parts[1] if len(parts) > 1 else ""
 
         max_seg_height = round(h * 0.28)
 
-        # Render Top Segment
         if top_text:
             wrapped_top, top_font, tw, th = _fit_text(
                 top_text, font_path, initial_font_size, max_text_width, max_seg_height, dummy_draw
             )
             top_x = (w - tw) // 2
             top_y = padding
-            stroke_w = max(2, round(top_font.size * 0.06))
+
+            # Auto-halo / drop-shadow if stroke is 0
+            if stroke_width == 0:
+                draw.multiline_text(
+                    (top_x + 2, top_y + 2),
+                    wrapped_top,
+                    font=top_font,
+                    fill=(0, 0, 0) if is_bright_text else (255, 255, 255),
+                    align="center",
+                    spacing=int(top_font.size * 0.2),
+                )
+
             draw.multiline_text(
                 (top_x, top_y),
                 wrapped_top,
                 font=top_font,
-                fill=(255, 255, 255),
-                stroke_width=stroke_w,
-                stroke_fill=(0, 0, 0),
+                fill=parsed_text_color,
+                stroke_width=stroke_width,
+                stroke_fill=default_stroke_fill if stroke_width > 0 else None,
                 align="center",
                 spacing=int(top_font.size * 0.2),
             )
 
-        # Render Bottom Segment
         if bottom_text:
             wrapped_bot, bot_font, bw, bh = _fit_text(
                 bottom_text, font_path, initial_font_size, max_text_width, max_seg_height, dummy_draw
             )
             bot_x = (w - bw) // 2
             bot_y = h - bh - padding
-            stroke_w = max(2, round(bot_font.size * 0.06))
+
+            if stroke_width == 0:
+                draw.multiline_text(
+                    (bot_x + 2, bot_y + 2),
+                    wrapped_bot,
+                    font=bot_font,
+                    fill=(0, 0, 0) if is_bright_text else (255, 255, 255),
+                    align="center",
+                    spacing=int(bot_font.size * 0.2),
+                )
+
             draw.multiline_text(
                 (bot_x, bot_y),
                 wrapped_bot,
                 font=bot_font,
-                fill=(255, 255, 255),
-                stroke_width=stroke_w,
-                stroke_fill=(0, 0, 0),
+                fill=parsed_text_color,
+                stroke_width=stroke_width,
+                stroke_fill=default_stroke_fill if stroke_width > 0 else None,
                 align="center",
                 spacing=int(bot_font.size * 0.2),
             )
 
+    elif variant_key in ("bottom_banner", "bottom"):
+        # Variant: Bottom Banner extending canvas downward
+        max_banner_height = round(h * 0.45)
+        wrapped_text, font, tw, th = _fit_text(
+            cleaned_text, font_path, initial_font_size, max_text_width, max_banner_height, dummy_draw
+        )
+
+        banner_height = th + (2 * padding)
+        total_height = h + banner_height
+
+        # Bottom banner background matches inverse of text color
+        banner_bg = (26, 26, 26) if is_bright_text else (255, 255, 255)
+
+        canvas = Image.new("RGB", (w, total_height), banner_bg)
+        canvas.paste(base_image, (0, 0))
+        draw = ImageDraw.Draw(canvas)
+
+        text_x = (w - tw) // 2
+        text_y = h + padding
+        draw.multiline_text(
+            (text_x, text_y),
+            wrapped_text,
+            font=font,
+            fill=parsed_text_color,
+            align="center",
+            spacing=int(font.size * 0.2),
+        )
+
+    elif variant_key in ("breaking_news", "news"):
+        # Variant: Breaking News Ticker overlay at bottom
+        canvas = base_image.copy()
+        draw = ImageDraw.Draw(canvas)
+
+        ticker_h = max(60, round(h * 0.16))
+        ticker_y = h - ticker_h
+
+        # Dark ticker background with red header bar
+        ticker_bg = Image.new("RGBA", (w, ticker_h), (20, 20, 20, 240))
+        canvas.paste(ticker_bg.convert("RGB"), (0, ticker_y))
+
+        # Red label box
+        label_w = max(110, round(w * 0.28))
+        label_bar = Image.new("RGB", (label_w, ticker_h), (210, 20, 20))
+        canvas.paste(label_bar, (0, ticker_y))
+
+        # Draw "BREAKING" or "NEWS" text on badge
+        badge_font = font_manager.load_font(font_path, max(16, round(ticker_h * 0.38)))
+        draw.text((12, ticker_y + round(ticker_h * 0.28)), "BREAKING", font=badge_font, fill=(255, 255, 255))
+
+        # Ticker text area
+        ticker_max_w = w - label_w - 20
+        wrapped_news, news_font, nw, nh = _fit_text(
+            cleaned_text, font_path, max(18, round(ticker_h * 0.40)), ticker_max_w, ticker_h - 10, dummy_draw
+        )
+        news_x = label_w + 14
+        news_y = ticker_y + (ticker_h - nh) // 2
+        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=(255, 230, 0))
+
     else:
-        # Variant A (White Header) or Variant B (Dark Header)
+        # Variant: Top Banner (Default White/Dark Header extending canvas upward)
         is_dark = variant_key in ("dark_header", "dark", "variant_b")
         header_bg_color = (26, 26, 26) if is_dark else (255, 255, 255)
-        text_color = (255, 255, 255) if is_dark else (0, 0, 0)
+        text_c = (255, 255, 255) if is_dark else (0, 0, 0)
 
         max_header_height = round(h * 0.45)
         wrapped_text, font, tw, th = _fit_text(
@@ -202,32 +344,30 @@ def _sync_render_worker(
         header_height = th + (2 * padding)
         total_height = header_height + h
 
-        # Create combined canvas
         canvas = Image.new("RGB", (w, total_height), header_bg_color)
         draw = ImageDraw.Draw(canvas)
 
-        # Draw wrapped text centered horizontally in header
         text_x = (w - tw) // 2
         text_y = padding
         draw.multiline_text(
             (text_x, text_y),
             wrapped_text,
             font=font,
-            fill=text_color,
+            fill=text_c,
             align="center",
             spacing=int(font.size * 0.2),
         )
 
-        # Paste base meme template directly below header
         canvas.paste(base_image, (0, header_height))
 
-    # 3. Brand Identity & Smart Contrast Logo Placement (KBKH Group)
+    # --------------------------------------------------------------------------
+    # Brand Identity (KBKH Group Smart Contrast)
+    # --------------------------------------------------------------------------
     if not is_clean:
         logo_w = max(80, round(w * 0.12))
         logo_h = max(24, round(logo_w * (324 / 1080)))
         logo_margin = max(10, round(w * 0.02))
 
-        # Position at top-right corner
         logo_box = (
             w - logo_margin - logo_w,
             logo_margin,
@@ -235,60 +375,98 @@ def _sync_render_worker(
             logo_margin + logo_h,
         )
 
-        # Sample luminance
         lum = _calculate_average_luminance(canvas, logo_box)
         logo_path = config.WHITE_LOGO_PATH if lum < config.LUMINANCE_THRESHOLD else config.BLACK_LOGO_PATH
 
         if logo_path.exists():
             with Image.open(logo_path) as raw_logo:
                 logo_rgba = raw_logo.convert("RGBA").resize((logo_w, logo_h), Image.Resampling.LANCZOS)
-                # Apply 80% opacity
                 alpha = logo_rgba.split()[3].point(lambda p: int(p * 0.80))
                 logo_rgba.putalpha(alpha)
-                # Paste using mask
                 canvas.paste(logo_rgba, (logo_box[0], logo_box[1]), mask=logo_rgba)
 
-    # 4. User Custom Watermark Injection
-    if watermark_bytes:
-        try:
-            wm_img = Image.open(io.BytesIO(watermark_bytes)).convert("RGBA")
-            # Downscale massive watermark inputs defensively
-            if wm_img.width > 2048 or wm_img.height > 2048:
-                wm_img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    # --------------------------------------------------------------------------
+    # Comprehensive Watermark Suite
+    # --------------------------------------------------------------------------
+    if watermark_enabled and (watermark_bytes or watermark_text):
+        diag = math.sqrt(canvas.width ** 2 + canvas.height ** 2)
+        base_target_w = round(diag * 0.08 * watermark_scale)
+        clamped_wm_w = max(40, min(round(canvas.width * 0.40), base_target_w))
+        m = max(12, round(canvas.width * 0.02))
+        pos_key = watermark_pos.lower().strip()
 
-            wm_w = max(50, round(w * 0.09))
-            wm_h = max(20, round(wm_img.height * (wm_w / wm_img.width)))
-            wm_resized = wm_img.resize((wm_w, wm_h), Image.Resampling.LANCZOS)
+        if watermark_bytes:
+            try:
+                wm_img = Image.open(io.BytesIO(watermark_bytes)).convert("RGBA")
+                if wm_img.width > 2048 or wm_img.height > 2048:
+                    wm_img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
 
-            m = max(12, round(w * 0.02))
-            pos_key = watermark_pos.lower().strip()
+                aspect = wm_img.height / max(1, wm_img.width)
+                target_h = max(20, round(clamped_wm_w * aspect))
+                wm_resized = wm_img.resize((clamped_wm_w, target_h), Image.Resampling.LANCZOS)
 
-            if pos_key == "top_left":
-                pos_xy = (m, m)
-            elif pos_key == "bottom_left":
-                pos_xy = (m, canvas.height - wm_h - m)
-            elif pos_key == "center":
-                pos_xy = ((w - wm_w) // 2, (canvas.height - wm_h) // 2)
-            else:  # bottom_right default
-                pos_xy = (w - wm_w - m, canvas.height - wm_h - m)
+                # Apply opacity multiplier
+                r, g, b, a = wm_resized.split()
+                alpha_factor = min(1.0, max(0.1, watermark_opacity))
+                a = a.point(lambda p: int(p * alpha_factor))
+                wm_resized.putalpha(a)
 
-            canvas.paste(wm_resized, pos_xy, mask=wm_resized)
-        except Exception:
-            pass  # Fail gracefully if custom watermark is corrupt
+                cw, ch = canvas.size
+                if pos_key == "top_left":
+                    pos_xy = (m, m)
+                elif pos_key == "top_right":
+                    pos_xy = (cw - clamped_wm_w - m, m)
+                elif pos_key == "bottom_left":
+                    pos_xy = (m, ch - target_h - m)
+                elif pos_key == "bottom_center":
+                    pos_xy = ((cw - clamped_wm_w) // 2, ch - target_h - m)
+                else:  # bottom_right
+                    pos_xy = (cw - clamped_wm_w - m, ch - target_h - m)
 
-    # 5. Strict Opt-In Promotional Banner Extension (Bannerless by Default)
+                canvas.paste(wm_resized, pos_xy, mask=wm_resized)
+            except Exception:
+                pass
+
+        elif watermark_text:
+            try:
+                draw = ImageDraw.Draw(canvas)
+                wm_font_size = max(14, round(clamped_wm_w * 0.15))
+                wm_font = font_manager.load_font(font_path, wm_font_size)
+                w_box = draw.textbbox((0, 0), watermark_text, font=wm_font)
+                wt_w = w_box[2] - w_box[0]
+                wt_h = w_box[3] - w_box[1]
+
+                cw, ch = canvas.size
+                if pos_key == "top_left":
+                    pos_xy = (m, m)
+                elif pos_key == "top_right":
+                    pos_xy = (cw - wt_w - m, m)
+                elif pos_key == "bottom_left":
+                    pos_xy = (m, ch - wt_h - m)
+                elif pos_key == "bottom_center":
+                    pos_xy = ((cw - wt_w) // 2, ch - wt_h - m)
+                else:  # bottom_right
+                    pos_xy = (cw - wt_w - m, ch - wt_h - m)
+
+                # Draw subtle watermark text with outline
+                draw.text(pos_xy, watermark_text, font=wm_font, fill=(255, 255, 255, int(255 * watermark_opacity)), stroke_width=2, stroke_fill=(0, 0, 0))
+            except Exception:
+                pass
+
+    # --------------------------------------------------------------------------
+    # Opt-In Promotional Banner Extension
+    # --------------------------------------------------------------------------
     if banner_bytes is not None:
         try:
             banner_img = Image.open(io.BytesIO(banner_bytes)).convert("RGB")
-            # Downscale massive banner inputs defensively
             if banner_img.width > 2560 or banner_img.height > 1024:
                 banner_img.thumbnail((2560, 1024), Image.Resampling.LANCZOS)
 
             bw, bh = banner_img.size
             if bw > 0 and bh > 0:
-                scale_ratio = w / bw
+                scale_ratio = canvas.width / bw
                 new_banner_h = max(30, round(bh * scale_ratio))
-                banner_resized = banner_img.resize((w, new_banner_h), Image.Resampling.LANCZOS)
+                banner_resized = banner_img.resize((canvas.width, new_banner_h), Image.Resampling.LANCZOS)
 
                 current_w, current_h = canvas.size
                 extended_canvas = Image.new("RGB", (current_w, current_h + new_banner_h))
@@ -296,9 +474,9 @@ def _sync_render_worker(
                 extended_canvas.paste(banner_resized, (0, current_h))
                 canvas = extended_canvas
         except Exception:
-            pass  # Fail gracefully if banner bytes are invalid
+            pass
 
-    # 6. In-Memory Export (JPEG 90% quality)
+    # Export buffer
     output_buffer = io.BytesIO()
     canvas.save(output_buffer, format="JPEG", quality=90, optimize=True)
     output_buffer.seek(0)
@@ -308,10 +486,18 @@ async def render_meme(
     template_bytes: bytes,
     text: str,
     font_path: Path,
-    variant: str = "white_header",
+    variant: str = "overlay",
     is_clean: bool = False,
+    text_color: str = "white",
+    stroke_width: int = 4,
+    filter_name: str = "none",
+    case_mode: str = "raw",
     watermark_bytes: Optional[bytes] = None,
+    watermark_text: Optional[str] = None,
     watermark_pos: str = "bottom_right",
+    watermark_scale: float = 1.0,
+    watermark_opacity: float = 0.8,
+    watermark_enabled: bool = True,
     banner_bytes: Optional[bytes] = None,
 ) -> io.BytesIO:
     """
@@ -325,7 +511,15 @@ async def render_meme(
         font_path,
         variant,
         is_clean,
+        text_color,
+        stroke_width,
+        filter_name,
+        case_mode,
         watermark_bytes,
+        watermark_text,
         watermark_pos,
+        watermark_scale,
+        watermark_opacity,
+        watermark_enabled,
         banner_bytes,
     )
