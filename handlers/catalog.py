@@ -1,6 +1,8 @@
 import math
+from typing import Optional
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -10,6 +12,7 @@ from database.queries import (
     get_templates_count,
     get_template_by_id,
     delete_template,
+    get_random_template,
 )
 
 router = Router(name="catalog_router")
@@ -85,11 +88,14 @@ async def handle_noop(callback: types.CallbackQuery):
     """No-operation button handler."""
     await callback.answer()
 
-@router.message(Command("template", "templates"))
+@router.message(Command("template", "templates"), StateFilter("*"), flags={"state": "*"})
 @router.callback_query(F.data == "menu_browse")
 @router.callback_query(F.data.startswith("tpl_grid:"))
-async def handle_catalog_grid(event: types.Message | types.CallbackQuery):
-    """Render multi-column catalog grid."""
+async def handle_catalog_grid(event: types.Message | types.CallbackQuery, state: Optional[FSMContext] = None):
+    """Render multi-column catalog grid and clear any active state if triggered via command."""
+    if state:
+        await state.clear()
+
     message = event if isinstance(event, types.Message) else event.message
     page = 1
 
@@ -132,6 +138,34 @@ async def handle_catalog_grid(event: types.Message | types.CallbackQuery):
             pass
 
     await message.answer(text, reply_markup=kb)
+
+@router.message(Command("random"), StateFilter("*"), flags={"state": "*"})
+async def handle_random_template_cmd(message: types.Message, state: FSMContext):
+    """Fetch and present a random meme template, clearing any active state."""
+    await state.clear()
+    template = await get_random_template()
+    if template:
+        title = template.get("title") or template.get("name") or "Random Template"
+        caption = (
+            f"<b>[RANDOM TEMPLATE: {title}]</b>\n"
+            f"Tags: {template.get('tags', 'None')}"
+        )
+        is_admin_user = message.from_user.id in config.ADMIN_IDS
+        kb = build_template_detail_keyboard(template["id"], page=1, is_admin_user=is_admin_user)
+        try:
+            await message.bot.send_photo(
+                chat_id=message.chat.id,
+                photo=template["file_id"],
+                caption=caption,
+                reply_markup=kb,
+                parse_mode="HTML",
+            )
+            return
+        except Exception:
+            await message.answer(caption, reply_markup=kb, parse_mode="HTML")
+            return
+
+    await message.answer("[Info: No templates currently available. Upload one using /add_template]")
 
 @router.callback_query(F.data.startswith("view_tpl:"))
 async def handle_view_template(callback: types.CallbackQuery):

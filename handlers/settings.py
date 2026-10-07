@@ -52,10 +52,15 @@ def get_settings_keyboard(user: dict) -> InlineKeyboardMarkup:
         ]
     )
 
+from typing import Optional
+from aiogram.filters import Command, StateFilter
+
 @router.callback_query(F.data == "menu_settings")
-@router.message(Command("settings"))
-async def handle_settings_command(event: types.Message | types.CallbackQuery):
-    """Present user configuration and preferences dashboard."""
+@router.message(Command("settings"), StateFilter("*"), flags={"state": "*"})
+async def handle_settings_command(event: types.Message | types.CallbackQuery, state: Optional[FSMContext] = None):
+    """Present user configuration and preferences dashboard, clearing state on command."""
+    if state and isinstance(event, types.Message):
+        await state.clear()
     message = event if isinstance(event, types.Message) else event.message
     user_id = event.from_user.id
     if isinstance(event, types.CallbackQuery):

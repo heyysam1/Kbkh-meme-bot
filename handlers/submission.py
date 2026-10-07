@@ -13,7 +13,9 @@ class TemplateUploadSG(StatesGroup):
     waiting_for_media = State()
     waiting_for_title = State()
 
-@router.message(Command("add_template"))
+from aiogram.filters import Command, StateFilter
+
+@router.message(Command("add_template"), StateFilter("*"), flags={"state": "*"})
 @router.callback_query(F.data == "action_add_template")
 async def start_template_submission(event: types.Message | types.CallbackQuery, state: FSMContext):
     """Initiate user template submission flow."""
@@ -81,7 +83,7 @@ async def process_submission_media(message: types.Message, state: FSMContext):
         reply_markup=skip_kb,
     )
 
-@router.message(TemplateUploadSG.waiting_for_media)
+@router.message(TemplateUploadSG.waiting_for_media, ~F.text.startswith("/"))
 async def process_invalid_media(message: types.Message):
     """Handle non-media input in media upload state."""
     await message.answer("[Invalid input. Send an image, video, or document file, or /cancel to abort.]")

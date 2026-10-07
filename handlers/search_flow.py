@@ -56,9 +56,11 @@ async def cb_menu_search(callback: types.CallbackQuery):
         parse_mode="HTML",
     )
 
-@router.message(Command("random"))
-async def handle_random_template(message: types.Message):
-    """Fetch and present a random meme template from local catalog or external fallback."""
+@router.message(Command("random"), StateFilter("*"), flags={"state": "*"})
+async def handle_random_template(message: types.Message, state: Optional[FSMContext] = None):
+    """Fetch and present a random meme template, clearing any active state."""
+    if state:
+        await state.clear()
     template = await get_random_template()
     if template:
         title = template.get("title") or template.get("name") or "Random Template"
@@ -109,9 +111,13 @@ async def handle_random_template(message: types.Message):
 
     await message.answer("[Info: No templates currently available. Upload one using /add_template]")
 
-@router.message(Command("search"))
-async def handle_search_command(message: types.Message):
-    """Handle /search <keyword> command."""
+from aiogram.filters import Command, StateFilter
+
+@router.message(Command("search"), StateFilter("*"), flags={"state": "*"})
+async def handle_search_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Handle /search <keyword> command across any state and clear state."""
+    if state:
+        await state.clear()
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
         await message.answer("[Usage: /search <keyword>. Example: /search drake]")
@@ -120,9 +126,9 @@ async def handle_search_command(message: types.Message):
     query = parts[1].strip()
     await process_search_query(message, query)
 
-@router.message(F.text, ~F.text.startswith("/"))
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def handle_text_search_fallback(message: types.Message):
-    """Catch general text queries outside active FSM states as search attempts."""
+    """Catch general text queries strictly outside any active FSM state as search attempts."""
     query = message.text.strip()
     if len(query) < 2:
         return

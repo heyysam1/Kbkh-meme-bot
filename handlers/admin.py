@@ -1,6 +1,8 @@
 import re
+from typing import Optional
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
@@ -29,9 +31,11 @@ def is_admin(user_id: int) -> bool:
 # Admin Dashboard
 # ------------------------------------------------------------------------------
 
-@router.message(Command("admin"))
-async def handle_admin_dashboard(message: types.Message):
-    """Display admin controls and operational overview."""
+@router.message(Command("admin"), StateFilter("*"), flags={"state": "*"})
+async def handle_admin_dashboard(message: types.Message, state: Optional[FSMContext] = None):
+    """Display admin controls and operational overview, clearing any active state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         await message.answer("[Access Denied: Admin privileges required.]")
         return
@@ -59,7 +63,7 @@ async def handle_admin_dashboard(message: types.Message):
 # Admin Retroactive Bulk Ingestion (Forwarded Channel Posts & Direct Uploads)
 # ------------------------------------------------------------------------------
 
-@router.message(F.chat.type == "private", F.photo | F.document | F.video | F.animation)
+@router.message(StateFilter(None), F.chat.type == "private", F.photo | F.document | F.video | F.animation)
 async def handle_admin_retroactive_ingest(message: types.Message):
     """
     Allow admins to forward past channel posts (photos, documents, videos, animations)
@@ -115,12 +119,11 @@ async def handle_admin_retroactive_ingest(message: types.Message):
 # External Source Management (/add_source, /sources, /remove_source)
 # ------------------------------------------------------------------------------
 
-@router.message(Command("add_source"))
-async def handle_add_source_command(message: types.Message):
-    """
-    Register an external meme feed or API source.
-    Usage: /add_source <url> [name]
-    """
+@router.message(Command("add_source"), StateFilter("*"), flags={"state": "*"})
+async def handle_add_source_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Register an external meme feed or API source across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         await message.answer("[Access Denied: Admin privileges required.]")
         return
@@ -146,9 +149,11 @@ async def handle_add_source_command(message: types.Message):
         parse_mode="HTML",
     )
 
-@router.message(Command("sources"))
-async def handle_list_sources_command(message: types.Message):
-    """List all registered external meme sources."""
+@router.message(Command("sources"), StateFilter("*"), flags={"state": "*"})
+async def handle_list_sources_command(message: types.Message, state: Optional[FSMContext] = None):
+    """List all registered external meme sources across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 
@@ -173,12 +178,11 @@ async def handle_list_sources_command(message: types.Message):
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
     await message.answer("\n".join(lines), reply_markup=kb, parse_mode="HTML")
 
-@router.message(Command("remove_source"))
-async def handle_remove_source_command(message: types.Message):
-    """
-    Remove an external meme feed source.
-    Usage: /remove_source <id>
-    """
+@router.message(Command("remove_source"), StateFilter("*"), flags={"state": "*"})
+async def handle_remove_source_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Remove an external meme feed source across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 
@@ -230,12 +234,11 @@ async def handle_delete_source_callback(callback: types.CallbackQuery):
 # Banner Management
 # ------------------------------------------------------------------------------
 
-@router.message(Command("addbanner"))
-async def handle_add_banner_command(message: types.Message):
-    """
-    Add a promotional banner to the library:
-    Usage: Send with a photo or reply to a photo: /addbanner <Banner Title>
-    """
+@router.message(Command("addbanner"), StateFilter("*"), flags={"state": "*"})
+async def handle_add_banner_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Add a promotional banner across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         await message.answer("[Access Denied: Admin privileges required.]")
         return
@@ -266,9 +269,11 @@ async def handle_add_banner_command(message: types.Message):
         parse_mode="HTML",
     )
 
-@router.message(Command("banners"))
-async def handle_list_banners_admin(message: types.Message):
-    """List all registered promotional banners with deletion controls."""
+@router.message(Command("banners"), StateFilter("*"), flags={"state": "*"})
+async def handle_list_banners_admin(message: types.Message, state: Optional[FSMContext] = None):
+    """List all registered promotional banners across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 
@@ -313,12 +318,11 @@ async def handle_delete_banner(callback: types.CallbackQuery):
 # Alias Management
 # ------------------------------------------------------------------------------
 
-@router.message(Command("addalias"))
-async def handle_add_alias_command(message: types.Message):
-    """
-    Register a search alias mapping:
-    Usage: /addalias <informal term> = <canonical template title>
-    """
+@router.message(Command("addalias"), StateFilter("*"), flags={"state": "*"})
+async def handle_add_alias_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Register an alias mapping across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 
@@ -347,9 +351,11 @@ async def handle_add_alias_command(message: types.Message):
         parse_mode="HTML",
     )
 
-@router.message(Command("aliases"))
-async def handle_list_aliases_command(message: types.Message):
-    """Display registered alias mappings."""
+@router.message(Command("aliases"), StateFilter("*"), flags={"state": "*"})
+async def handle_list_aliases_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Display registered alias mappings across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 
@@ -368,9 +374,11 @@ async def handle_list_aliases_command(message: types.Message):
 # Admin Statistics
 # ------------------------------------------------------------------------------
 
-@router.message(Command("stats"))
-async def handle_admin_stats(message: types.Message):
-    """Show operational statistics."""
+@router.message(Command("stats"), StateFilter("*"), flags={"state": "*"})
+async def handle_admin_stats(message: types.Message, state: Optional[FSMContext] = None):
+    """Show operational statistics across any state."""
+    if state:
+        await state.clear()
     if not is_admin(message.from_user.id):
         return
 

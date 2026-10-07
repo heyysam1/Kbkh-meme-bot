@@ -311,7 +311,7 @@ def _sync_render_worker(
             spacing=int(font.size * 0.2),
         )
 
-    elif variant_key in ("breaking_news", "news"):
+    elif variant_key in ("breaking_news", "news", "breaking"):
         # Variant: Breaking News Ticker overlay at bottom
         canvas = base_image.copy()
         draw = ImageDraw.Draw(canvas)
@@ -404,7 +404,9 @@ def _sync_render_worker(
         base_target_w = round(diag * 0.08 * watermark_scale)
         clamped_wm_w = max(40, min(round(canvas.width * 0.40), base_target_w))
         m = max(12, round(canvas.width * 0.02))
-        pos_key = watermark_pos.lower().strip()
+        raw_pos_key = watermark_pos.lower().strip()
+        pos_shortcuts = {"tl": "top_left", "tr": "top_right", "bl": "bottom_left", "br": "bottom_right", "bc": "bottom_center"}
+        pos_key = pos_shortcuts.get(raw_pos_key, raw_pos_key)
 
         if watermark_bytes:
             try:

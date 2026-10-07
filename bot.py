@@ -76,16 +76,15 @@ async def main() -> None:
     # Initialize Dispatcher with in-memory FSM storage
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Register modular routers
-    dp.include_router(channel.router)     # Multi-channel unrestricted ingestion
-    dp.include_router(admin.router)       # Admin commands & retroactive bulk ingestion
-    dp.include_router(submission.router)  # Interactive user template upload FSM
-    dp.include_router(catalog.router)     # Multi-column grid catalog & detail views
-    dp.include_router(editor.router)      # Stateful live preview meme editor
-    dp.include_router(start.router)       # /start, /help, main menu
-    dp.include_router(search_flow.router) # Search & template discovery
-    dp.include_router(settings.router)    # Watermark & font preferences
-    dp.include_router(meme_flow.router)   # Legacy flow backward compatibility
+    # Register modular routers in strict hierarchical priority
+    dp.include_router(admin.router)          # Admin overrides
+    dp.include_router(start.router)          # /start, /help, /cancel
+    dp.include_router(catalog.router)        # /template, grid browsing, /random
+    dp.include_router(submission.router)     # /add_template user submission FSM
+    dp.include_router(search_flow.router)    # /search & hybrid engine
+    dp.include_router(editor.router)         # Editing FSM & all edit:* callbacks
+    dp.include_router(settings.router)       # User & watermark settings
+    dp.include_router(channel.router)        # Unrestricted channel_post listeners
 
     # Register startup hook
     dp.startup.register(on_startup)

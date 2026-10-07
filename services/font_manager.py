@@ -110,8 +110,16 @@ class FontManager:
                 return self._fonts[font_key]
             # Match on filename or alias
             target = Path(font_key).name.lower()
+            target_norm = target.replace("_", "").replace("-", "")
             for c_key, _, _, aliases in CURATED_FONTS:
-                if target == c_key.lower() or any(target == a.lower() for a in aliases):
+                stems = [Path(c_key).stem.lower()] + [Path(a).stem.lower() for a in aliases]
+                stems_norm = [s.replace("_", "").replace("-", "").replace(" ", "") for s in stems]
+                if (
+                    target == c_key.lower()
+                    or any(target == a.lower() for a in aliases)
+                    or any(target == s for s in stems)
+                    or any(target_norm == sn for sn in stems_norm)
+                ):
                     if c_key in self._fonts:
                         return self._fonts[c_key]
 
