@@ -1,0 +1,43 @@
+# Security & Credentials
+.env
+.env.*
+!.env.example
+
+# SQLite Database & Persistent Mounts
+data/
+*.db
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Internal Prompts, Specifications & Architecture Notes
+Intructions/
+Instructions/
+*.md.draft
+scratch/
+
+# Python Runtime & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment & Virtualenvs
+env/
+venv/
+.venv/
+ENV/
+
+# IDE & OS Artifacts
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Deployment & Logs
+*.log
+Procfile.local

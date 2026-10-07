@@ -1,0 +1,252 @@
+from typing import Any, Dict, List, Optional
+from database.db import get_db
+
+# ------------------------------------------------------------------------------
+# User Operations
+# ------------------------------------------------------------------------------
+
+async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve user record by Telegram user_id."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM users WHERE user_id = ?;", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str, Any]:
+    """Fetch existing user profile or initialize on first interaction."""
+    existing = await get_user(user_id)
+    if existing:
+        return existing
+
+    async with get_db() as conn:
+        await conn.execute(
+            """
+            INSERT INTO users (user_id, preferred_font, watermark_file_id, watermark_enabled, watermark_position)
+            VALUES (?, ?, NULL, 0, 'bottom_right');
+            """,
+            (user_id, preferred_font),
+        )
+        await conn.commit()
+
+    return await get_user(user_id) or {
+        "user_id": user_id,
+        "preferred_font": preferred_font,
+        "watermark_file_id": None,
+        "watermark_enabled": 0,
+        "watermark_position": "bottom_right",
+    }
+
+async def update_user_font(user_id: int, font_key: str) -> None:
+    """Update user's preferred font selection."""
+    await upsert_user(user_id)
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET preferred_font = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?;",
+            (font_key, user_id),
+        )
+        await conn.commit()
+
+async def update_user_watermark(
+    user_id: int, file_id: str, enabled: int = 1, position: str = "bottom_right"
+) -> None:
+    """Save or update user custom watermark file_id, position, and status."""
+    await upsert_user(user_id)
+    async with get_db() as conn:
+        await conn.execute(
+            """
+            UPDATE users
+            SET watermark_file_id = ?, watermark_enabled = ?, watermark_position = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = ?;
+            """,
+            (file_id, enabled, position, user_id),
+        )
+        await conn.commit()
+
+async def toggle_user_watermark(user_id: int) -> bool:
+    """Toggle user watermark ON/OFF. Returns the new enabled state."""
+    user = await upsert_user(user_id)
+    current_status = user.get("watermark_enabled", 0)
+    new_status = 0 if current_status else 1
+
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET watermark_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?;",
+            (new_status, user_id),
+        )
+        await conn.commit()
+
+    return bool(new_status)
+
+async def set_watermark_position(user_id: int, position: str) -> None:
+    """Update user's chosen watermark anchor point."""
+    await upsert_user(user_id)
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET watermark_position = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?;",
+            (position, user_id),
+        )
+        await conn.commit()
+
+# ------------------------------------------------------------------------------
+# Template Operations
+# ------------------------------------------------------------------------------
+
+async def add_template(file_id: str, name: str, tags: str = "", is_trending: int = 0) -> int:
+    """Register a new meme template with its Telegram file_id and tags."""
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            """
+            INSERT INTO templates (file_id, name, tags, is_trending, usage_count)
+            VALUES (?, ?, ?, ?, 0);
+            """,
+            (file_id.strip(), name.strip(), tags.strip(), 1 if is_trending else 0),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+async def get_template_by_id(template_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve template record by its primary key ID."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM templates WHERE id = ?;", (template_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def get_all_templates(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    """Fetch paginated list of meme templates ordered by popularity."""
+    async with get_db() as conn:
+        async with conn.execute(
+            """
+            SELECT * FROM templates
+            ORDER BY is_trending DESC, usage_count DESC, id DESC
+            LIMIT ? OFFSET ?;
+            """,
+            (limit, offset),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def get_trending_templates(limit: int = 10) -> List[Dict[str, Any]]:
+    """Fetch high-scoring trending meme templates."""
+    async with get_db() as conn:
+        async with conn.execute(
+            """
+            SELECT * FROM templates
+            WHERE is_trending = 1 OR usage_count > 0
+            ORDER BY is_trending DESC, usage_count DESC
+            LIMIT ?;
+            """,
+            (limit,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def increment_template_usage(template_id: int) -> None:
+    """Increment popularity usage count when a meme is rendered."""
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE templates SET usage_count = usage_count + 1 WHERE id = ?;",
+            (template_id,),
+        )
+        await conn.commit()
+
+async def delete_template(template_id: int) -> bool:
+    """Hard delete a meme template from the library."""
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM templates WHERE id = ?;", (template_id,))
+        await conn.commit()
+        return True
+
+# ------------------------------------------------------------------------------
+# Banner Operations (Strictly Opt-In)
+# ------------------------------------------------------------------------------
+
+async def add_banner(name: str, file_id: str, is_default: int = 0) -> int:
+    """Add a promotional banner to the database."""
+    async with get_db() as conn:
+        if is_default:
+            # Demote any other default banner
+            await conn.execute("UPDATE banners SET is_default = 0;")
+        cursor = await conn.execute(
+            "INSERT INTO banners (name, file_id, is_default) VALUES (?, ?, ?);",
+            (name.strip(), file_id.strip(), 1 if is_default else 0),
+        )
+        await conn.commit()
+        return cursor.lastrowid
+
+async def get_banner_by_id(banner_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieve banner by ID."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM banners WHERE id = ?;", (banner_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def get_default_banner() -> Optional[Dict[str, Any]]:
+    """Retrieve configured default banner, or latest banner if any."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM banners ORDER BY is_default DESC, id DESC LIMIT 1;"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def get_all_banners() -> List[Dict[str, Any]]:
+    """Retrieve all available promotional banners."""
+    async with get_db() as conn:
+        async with conn.execute("SELECT * FROM banners ORDER BY is_default DESC, id DESC;") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+async def set_default_banner(banner_id: int) -> None:
+    """Designate a specific banner as the default."""
+    async with get_db() as conn:
+        await conn.execute("UPDATE banners SET is_default = 0;")
+        await conn.execute("UPDATE banners SET is_default = 1 WHERE id = ?;", (banner_id,))
+        await conn.commit()
+
+async def delete_banner(banner_id: int) -> bool:
+    """Delete a promotional banner."""
+    async with get_db() as conn:
+        await conn.execute("DELETE FROM banners WHERE id = ?;", (banner_id,))
+        await conn.commit()
+        return True
+
+# ------------------------------------------------------------------------------
+# Alias Operations (High-Precision Search)
+# ------------------------------------------------------------------------------
+
+async def resolve_alias(term: str) -> Optional[str]:
+    """Check if an informal/colloquial search term maps to a canonical name."""
+    clean_term = term.strip().lower()
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT canonical_name FROM aliases WHERE LOWER(alias_term) = ?;",
+            (clean_term,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["canonical_name"] if row else None
+
+async def add_alias(term: str, canonical: str) -> None:
+    """Register a new alias mapping."""
+    async with get_db() as conn:
+        await conn.execute(
+            """
+            INSERT INTO aliases (alias_term, canonical_name)
+            VALUES (?, ?)
+            ON CONFLICT(alias_term) DO UPDATE SET canonical_name = excluded.canonical_name;
+            """,
+            (term.strip().lower(), canonical.strip()),
+        )
+        await conn.commit()
+
+async def get_all_aliases() -> List[Dict[str, Any]]:
+    """Retrieve all alias pairs."""
+    async with get_db() as conn:
+        async with conn.execute("SELECT * FROM aliases ORDER BY alias_term ASC;") as cursor:
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
