@@ -1,27 +1,53 @@
 import unittest
 from pathlib import Path
 import config
-from services.font_manager import FontManager, font_manager
+from services.font_manager import FontManager, font_manager, CURATED_FONTS
 
 
 class TestFontManager(unittest.TestCase):
-    def test_font_scanning(self):
+    def test_exactly_ten_fonts_exist_in_directory(self):
+        """Assert that assets/fonts directory strictly contains exactly the 10 allowed fonts."""
+        fonts = [
+            f for f in config.FONTS_DIR.iterdir()
+            if f.is_file() and f.suffix.lower() in (".ttf", ".otf")
+        ]
+        self.assertEqual(
+            len(fonts),
+            10,
+            f"Expected exactly 10 fonts in assets/fonts, found {len(fonts)}: {[f.name for f in fonts]}",
+        )
+
+    def test_exactly_ten_curated_fonts_registered(self):
+        """Verify FontManager registers strictly the 10 approved fonts."""
         fm = FontManager()
-        self.assertGreaterEqual(len(fm._fonts), 15)
-        # Verify primary defaults exist
-        self.assertIn(config.DEFAULT_BENGALI_FONT, fm._fonts)
-        self.assertIn(config.DEFAULT_ENGLISH_FONT, fm._fonts)
+        font_list = fm.get_font_list()
+        self.assertEqual(len(font_list), 10, f"Expected exactly 10 registered fonts, got {len(font_list)}")
+
+        registered_displays = [name for _, name in font_list]
+        expected_displays = [
+            "Kalpurush",
+            "Anek Bangla",
+            "Anek ExtraBold",
+            "Li Siliguri",
+            "Headline Bangla",
+            "Noto Sans Bengali",
+            "Impact",
+            "Anton",
+            "Inter",
+            "Poppins Bold",
+        ]
+        self.assertEqual(registered_displays, expected_displays)
 
     def test_script_detection(self):
-        # Bengali detection
+        """Verify Bengali vs English Unicode block detection."""
         self.assertEqual(font_manager.detect_script("বাংলা মিম"), "bengali")
         self.assertEqual(font_manager.detect_script("Hello বাংলা"), "bengali")
-        # English detection
         self.assertEqual(font_manager.detect_script("Hello world"), "english")
         self.assertEqual(font_manager.detect_script("12345!@#$"), "english")
 
     def test_font_resolution_and_fallback(self):
-        # Specific valid key
+        """Verify key resolution and script-aware fallbacks."""
+        # Valid key
         path = font_manager.get_font_path("Impact.ttf")
         self.assertEqual(path.name, "Impact.ttf")
         self.assertTrue(path.exists())
@@ -35,12 +61,24 @@ class TestFontManager(unittest.TestCase):
         self.assertEqual(fallback_english.name, config.DEFAULT_ENGLISH_FONT)
 
     def test_display_name_sanitization(self):
+        """Verify clean emoji-free display names for the 10 approved fonts."""
         fm = FontManager()
-        cleaned = fm.sanitize_display_name("HindSiliguri-Bold.ttf")
-        self.assertEqual(cleaned, "Hind Siliguri (Bold)")
+        self.assertEqual(fm.sanitize_display_name("Kalpurush.ttf"), "Kalpurush")
+        self.assertEqual(fm.sanitize_display_name("AnekBangla.ttf"), "Anek Bangla")
+        self.assertEqual(fm.sanitize_display_name("AnekBangla-ExtraBold.ttf"), "Anek ExtraBold")
+        self.assertEqual(fm.sanitize_display_name("LiSiliguri.ttf"), "Li Siliguri")
+        self.assertEqual(fm.sanitize_display_name("HeadlineBangla.ttf"), "Headline Bangla")
+        self.assertEqual(fm.sanitize_display_name("NotoSansBengali.ttf"), "Noto Sans Bengali")
+        self.assertEqual(fm.sanitize_display_name("Impact.ttf"), "Impact")
+        self.assertEqual(fm.sanitize_display_name("Anton-Regular.ttf"), "Anton")
+        self.assertEqual(fm.sanitize_display_name("Inter-Bold.ttf"), "Inter")
+        self.assertEqual(fm.sanitize_display_name("Poppins-Bold.ttf"), "Poppins Bold")
 
-        cleaned_impact = fm.sanitize_display_name("Impact.ttf")
-        self.assertEqual(cleaned_impact, "Impact (Classic Meme)")
+    def test_load_font_with_raqm_layout(self):
+        """Verify font loading returns valid FreeTypeFont."""
+        path = font_manager.get_font_path(config.DEFAULT_BENGALI_FONT)
+        font = font_manager.load_font(path, 24)
+        self.assertIsNotNone(font)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import asyncio
 import io
+import logging
 import math
 import textwrap
 from pathlib import Path
@@ -8,6 +9,16 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 from services.effects import apply_filter
 from services.font_manager import font_manager
+
+logger = logging.getLogger("kbkh_meme_bot.renderer")
+
+def load_font(font_path: Union[str, Path], size: int) -> ImageFont.FreeTypeFont:
+    """Load font enforcing RAQM complex text-shaping engine with fallback."""
+    try:
+        return ImageFont.truetype(str(font_path), size=size, layout_engine=ImageFont.Layout.RAQM)
+    except Exception as e:
+        logger.warning(f"RAQM engine unavailable, falling back: {e}")
+        return ImageFont.truetype(str(font_path), size=size)
 
 # Security (CWE-409): Restrict decompression threshold to ~25 Megapixels (e.g. 5000x5000)
 # to protect memory-constrained containers (512MB RAM) from OOM kill.
@@ -127,7 +138,7 @@ def _fit_text(
 
     while current_size >= min_size and iteration < max_iterations:
         iteration += 1
-        font = font_manager.load_font(font_path, current_size)
+        font = load_font(font_path, current_size)
         wrapped = _wrap_text_to_width(text, font, max_width, draw)
         bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=int(current_size * 0.2))
         text_w = bbox[2] - bbox[0]
@@ -139,7 +150,7 @@ def _fit_text(
         step = 4 if current_size > 44 else 2
         current_size -= step
 
-    font = font_manager.load_font(font_path, min_size)
+    font = load_font(font_path, min_size)
     wrapped = _wrap_text_to_width(text, font, max_width, draw)
     bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=int(min_size * 0.2))
     return wrapped, font, bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -318,7 +329,7 @@ def _sync_render_worker(
         canvas.paste(label_bar, (0, ticker_y))
 
         # Draw "BREAKING" or "NEWS" text on badge
-        badge_font = font_manager.load_font(font_path, max(16, round(ticker_h * 0.38)))
+        badge_font = load_font(font_path, max(16, round(ticker_h * 0.38)))
         draw.text((12, ticker_y + round(ticker_h * 0.28)), "BREAKING", font=badge_font, fill=(255, 255, 255))
 
         # Ticker text area

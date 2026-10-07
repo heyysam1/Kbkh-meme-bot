@@ -9,6 +9,7 @@ from services.renderer import (
     _calculate_average_luminance,
     _wrap_text_to_width,
     _sync_render_worker,
+    load_font,
     VARIANT_OVERLAY,
     VARIANT_TOP_BANNER,
     VARIANT_BOTTOM_BANNER,
@@ -165,6 +166,12 @@ class TestRenderer(unittest.TestCase):
                 is_clean=False,
             )
             self.assertIsInstance(buf, io.BytesIO)
+
+
+    def test_renderer_load_font(self):
+        font_path = font_manager.get_font_path(script="bengali")
+        font = load_font(font_path, 28)
+        self.assertIsNotNone(font)
 
 
 if __name__ == "__main__":

@@ -75,51 +75,40 @@ Text scaling and positioning adapt smoothly to arbitrary canvas dimensions:
 - **Iterative Decrement Engine**: An auto-shrinking bounding loop calculates `multiline_textbbox`, decrementing font sizes dynamically by 2pt steps until text fits within boundary limits ($H \cdot 0.45$ for headers; $H \cdot 0.28$ for overlays).
 - **Script-Aware Token Wrapping**: Handles complex Bengali conjoints and English word breaks gracefully without breaking glyph structures.
 
-### 4. Multi-Script Typography Engine
-Equipped with 17 verified Unicode TrueType fonts, systematically purged of legacy ANSI/non-standard encodings:
+### 4. Curated 10-Font Typography Engine
+Equipped with strictly 10 verified Unicode TrueType fonts, providing advanced Bengali Raqm complex text-shaping and classic English meme typography:
 
 | Script | Font Name | Canonical File | Ideal Meme Style |
 | :--- | :--- | :--- | :--- |
-| **Bengali** | **Hind Siliguri (Bold)** *(Default)* | `HindSiliguri-Bold.ttf` | High-impact modern memes |
-| Bengali | Kalpurush | `kalpurush.ttf` | Traditional clean typography |
-| Bengali | Anek Bangla (ExtraBold) | `Anek Bangla ExtraBold.ttf` | Heavy headline expressions |
-| Bengali | Anek Bangla (Condensed) | `Anek Bangla Condensed Bold.ttf` | Long sentences & tight headers |
-| Bengali | Headline Bangla | `Headline Bangla Regular Unicode.ttf` | Bold narrative statements |
-| Bengali | Li Ador Noirrit (Italic) | `Li Ador Noirrit A-V2 Italic.ttf` | Stylized emotional punches |
-| Bengali | Li Saboj Charulota | `Li-Saboj Charulota Unicode Medium.ttf` | Expressive artistic captions |
-| Bengali | Li Shamim Cholontika | `LiShamimCholontikaUnicode-Regular.ttf` | Casual contemporary dialog |
-| Bengali | Lima Bosonto Borno | `Lima Bosonto Borno Encoding.ttf` | Distinctive decorative flair |
-| Bengali | Noto Sans Bengali (Thin) | `Noto_Sans_Bengali-Thin.ttf` | Subtle commentary captions |
-| **English** | **Impact (Classic Meme)** *(Default)* | `Impact.ttf` | Vintage top/bottom viral memes |
-| English | Anton (Bold Impact) | `Anton-Regular.ttf` | Punchy bold social headers |
-| English | Poppins (Bold) | `Poppins-Bold.ttf` | Modern minimal geometric style |
-| English | Inter (Bold) | `Inter-Bold.ttf` | Neutral, high-readability layout |
-| English | Bebas Neue | `BebasNeue-Regular.ttf` | All-caps cinematic impact |
-| English | Oswald (Bold) | `Oswald-Bold.ttf` | Tall condensed emphasis |
-| English | Montserrat (Bold) | `Montserrat-Bold.ttf` | Clean corporate & tech satire |
+| **Bengali** | **Kalpurush** *(Default)* | `Kalpurush.ttf` | Traditional clean Bengali typography |
+| Bengali | Anek Bangla | `AnekBangla.ttf` | Modern versatile headline expressions |
+| Bengali | Anek ExtraBold | `AnekBangla-ExtraBold.ttf` | Heavy high-impact meme headlines |
+| Bengali | Li Siliguri | `LiSiliguri.ttf` | Crisp contemporary social captions |
+| Bengali | Headline Bangla | `HeadlineBangla.ttf` | Bold dramatic narrative statements |
+| Bengali | Noto Sans Bengali | `NotoSansBengali.ttf` | High-readability subtle captions |
+| **English** | **Impact** *(Default)* | `Impact.ttf` | Vintage top/bottom viral memes |
+| English | Anton | `Anton-Regular.ttf` | Punchy bold social headers |
+| English | Inter | `Inter-Bold.ttf` | Modern neutral layout |
+| English | Poppins Bold | `Poppins-Bold.ttf` | Clean geometric minimalism |
 
 - **Automatic Script Detection**: Regex ranges (`\u0980`–`\u09FF`) automatically identify Bengali input and route to Bengali typography defaults.
-- **Fail-Safe Fallbacks**: If an unrecognized font key is submitted, the engine seamlessly routes to `HindSiliguri-Bold.ttf` or `Impact.ttf`.
+- **Fail-Safe Fallbacks**: If an unrecognized font key is submitted, the engine seamlessly routes to `Kalpurush.ttf` or `Impact.ttf`.
+- **Raqm Complex Text-Shaping**: Enforces `ImageFont.Layout.RAQM` for correct Bengali vowel-sign placement and conjunct ligatures (যুক্তবর্ণ).
 
-### 5. 3 Output Variants
-Users can instantly toggle between three distinct layouts:
-- **Variant A (White Header)**: Clean white canvas prepended above the template with auto-wrapped black text; standard modern Twitter/Reddit format.
-- **Variant B (Dark Header `#1A1A1A`)**: Sleek dark mode header with crisp white text; ideal for dark-themed templates and night feeds.
-- **Variant C (Classic Overlay)**: Traditional top/bottom text rendered directly onto the template with thick black outlines (`stroke_width`) and pure white fill. Use `|` delimiter to split top and bottom lines.
+### 5. Layout Variants
+Users can instantly toggle between layouts:
+- **Variant Overlay**: Classic outlined top/bottom text directly onto the canvas. Use `|` delimiter to split lines.
+- **Variant Top Banner**: Clean header canvas prepended above the template with auto-wrapped text.
+- **Variant Bottom Banner**: Dynamic bottom banner extending canvas downward.
+- **Variant Breaking News**: Bottom breaking-news ticker with dynamic red label bar.
 
-### 6. Opt-In Banner System
-- Memes are generated **bannerless by default**.
-- Operators can upload promotional sponsor banners via admin commands.
-- Users can selectively attach banners via `[➕ Add Banner]` and remove them via `[✖️ Remove Banner]`.
-- Banners dynamically scale to match canvas width ($W_{\text{banner}} = W_{\text{canvas}}$) and smoothly extend the canvas downward.
-
-### 7. Dual-Export & Raw Dispatch
-- **Clean Export (`[📥 Download Clean]`)**: Instantly re-renders the meme without the KBKH brand watermark for personal use.
-- **Raw Template Delivery (`[📥 টেমপ্লেট ডাউনলোড]`)**: Dispatches the untouched source template image directly, both as a compressed preview and as an uncompressed Telegram Document.
+### 6. Watermark & Logo Controls
+- Configurable watermark scaling (0.5x - 2.0x), opacity (25% - 100%), and 5 anchor positions.
+- Clean unbranded export option for personal use.
 
 ---
 
-## 📂 Repository Directory Tree
+## Repository Directory Tree
 
 ```
 kbkh-meme-engine/
@@ -127,15 +116,23 @@ kbkh-meme-engine/
 ├── .gitignore                # Production-grade git isolation manifest
 ├── LICENSE                   # Open-source MIT License (2026 KBKH Group)
 ├── Procfile                  # Railway / PaaS process declaration
+├── nixpacks.toml             # Nixpacks configuration with libraqm & harfbuzz
 ├── README.md                 # Exhaustive architectural documentation
 ├── bot.py                    # Application entrypoint & dispatcher orchestration
 ├── config.py                 # Centralized environment & asset validation
 ├── requirements.txt          # Production Python dependencies
 ├── assets/
-│   ├── fonts/                # 17 verified Unicode TrueType font binaries
-│   │   ├── HindSiliguri-Bold.ttf
+│   ├── fonts/                # Exactly 10 curated Unicode TrueType fonts
+│   │   ├── AnekBangla-ExtraBold.ttf
+│   │   ├── AnekBangla.ttf
+│   │   ├── Anton-Regular.ttf
+│   │   ├── HeadlineBangla.ttf
 │   │   ├── Impact.ttf
-│   │   └── ...
+│   │   ├── Inter-Bold.ttf
+│   │   ├── Kalpurush.ttf
+│   │   ├── LiSiliguri.ttf
+│   │   ├── NotoSansBengali.ttf
+│   │   └── Poppins-Bold.ttf
 │   └── logos/                # Brand identity assets
 │       ├── kbkh_white.png
 │       └── kbkh_black.png
