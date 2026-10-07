@@ -19,7 +19,7 @@ router = Router(name="admin_router")
 def is_admin(user_id: int) -> bool:
     """Check if user has administrative rights."""
     if not config.ADMIN_IDS:
-        return True  # If no admin IDs are defined, allow initial setup
+        return False  # Secure fail-closed: if no admin IDs configured, deny all admin actions
     return user_id in config.ADMIN_IDS
 
 # ------------------------------------------------------------------------------
@@ -30,11 +30,15 @@ def is_admin(user_id: int) -> bool:
 async def handle_channel_photo_post(message: types.Message):
     """
     Automated meme template ingestion listener:
-    1. Captures incoming channel photo posts without downloading to disk.
-    2. Extracts largest resolution Telegram file_id.
-    3. Parses hashtags as search tags and remaining text as template title.
-    4. Records entry in SQLite templates table.
+    1. Validates channel origin against config.CHANNEL_ID.
+    2. Captures incoming channel photo posts without downloading to disk.
+    3. Extracts largest resolution Telegram file_id.
+    4. Parses hashtags as search tags and remaining text as template title.
+    5. Records entry in SQLite templates table.
     """
+    # Security: Ignore channel posts if no channel configured or post originates elsewhere
+    if not config.CHANNEL_ID or message.chat.id != config.CHANNEL_ID:
+        return
     file_id = message.photo[-1].file_id
     caption = message.caption.strip() if message.caption else ""
 

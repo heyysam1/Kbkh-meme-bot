@@ -8,6 +8,10 @@ from PIL import Image, ImageDraw, ImageFont
 import config
 from services.font_manager import font_manager
 
+# Security (CWE-409): Restrict decompression threshold to ~25 Megapixels (e.g. 5000x5000)
+# to protect memory-constrained containers (512MB RAM) from OOM kill.
+Image.MAX_IMAGE_PIXELS = 25_000_000
+
 def _calculate_average_luminance(im_rgb: Image.Image, box: Tuple[int, int, int, int]) -> float:
     """
     Compute average luminance of pixels in the target crop box:
@@ -63,10 +67,19 @@ def _fit_text(
     """
     Iterative decrement loop reducing font size until the multi-line text
     fits within both max_width and max_height safely.
+    Includes safeguards against runaway CPU loops.
     """
-    current_size = initial_size
+    # Guard against excessively long word sequences
+    words = text.split()
+    if len(words) > 100:
+        text = " ".join(words[:100])
 
-    while current_size >= min_size:
+    current_size = initial_size
+    max_iterations = 35
+    iteration = 0
+
+    while current_size >= min_size and iteration < max_iterations:
+        iteration += 1
         font = font_manager.load_font(font_path, current_size)
         wrapped = _wrap_text_to_width(text, font, max_width, draw)
         bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=int(current_size * 0.2))
@@ -76,7 +89,8 @@ def _fit_text(
         if text_h <= max_height and text_w <= max_width:
             return wrapped, font, text_w, text_h
 
-        current_size -= 2
+        step = 4 if current_size > 44 else 2
+        current_size -= step
 
     # Return minimum size result with truncation if still overflowing
     font = font_manager.load_font(font_path, min_size)
@@ -101,6 +115,12 @@ def _sync_render_worker(
     # 1. Load base template
     base_image = Image.open(io.BytesIO(template_bytes)).convert("RGB")
     w, h = base_image.size
+
+    # Security: Downscale excessively large template images to prevent container OOM
+    MAX_CANVAS_DIM = 2560
+    if w > MAX_CANVAS_DIM or h > MAX_CANVAS_DIM:
+        base_image.thumbnail((MAX_CANVAS_DIM, MAX_CANVAS_DIM), Image.Resampling.LANCZOS)
+        w, h = base_image.size
 
     padding = max(16, round(w * 0.025))
     max_text_width = w - (2 * padding)
@@ -232,6 +252,10 @@ def _sync_render_worker(
     if watermark_bytes:
         try:
             wm_img = Image.open(io.BytesIO(watermark_bytes)).convert("RGBA")
+            # Downscale massive watermark inputs defensively
+            if wm_img.width > 2048 or wm_img.height > 2048:
+                wm_img.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+
             wm_w = max(50, round(w * 0.09))
             wm_h = max(20, round(wm_img.height * (wm_w / wm_img.width)))
             wm_resized = wm_img.resize((wm_w, wm_h), Image.Resampling.LANCZOS)
@@ -256,6 +280,10 @@ def _sync_render_worker(
     if banner_bytes is not None:
         try:
             banner_img = Image.open(io.BytesIO(banner_bytes)).convert("RGB")
+            # Downscale massive banner inputs defensively
+            if banner_img.width > 2560 or banner_img.height > 1024:
+                banner_img.thumbnail((2560, 1024), Image.Resampling.LANCZOS)
+
             bw, bh = banner_img.size
             if bw > 0 and bh > 0:
                 scale_ratio = w / bw

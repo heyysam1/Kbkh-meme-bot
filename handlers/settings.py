@@ -129,6 +129,13 @@ async def handle_receive_watermark(message: types.Message, state: FSMContext):
     if message.photo:
         file_id = message.photo[-1].file_id
     elif message.document:
+        mime = (message.document.mime_type or "").lower()
+        if not (mime.startswith("image/") or mime in {"image/png", "image/jpeg", "image/webp"}):
+            await message.answer("❌ শুধুমাত্র ইমেজ ফাইল (PNG, JPG, WEBP) ওয়াটারমার্ক হিসেবে গ্রহণযোগ্য।")
+            return
+        if message.document.file_size and message.document.file_size > 5 * 1024 * 1024:
+            await message.answer("❌ ওয়াটারমার্ক ফাইল ৫ MB এর চেয়ে ছোট হতে হবে।")
+            return
         file_id = message.document.file_id
 
     if not file_id:

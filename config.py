@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # Base directory of the project
 BASE_DIR: Path = Path(__file__).resolve().parent
@@ -37,11 +37,25 @@ def _parse_admin_ids(raw_ids: str) -> List[int]:
         return admin_list
     for item in raw_ids.replace(",", " ").split():
         item = item.strip()
-        if item.isdigit():
+        try:
             admin_list.append(int(item))
+        except ValueError:
+            pass
     return admin_list
 
 ADMIN_IDS: List[int] = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+
+# Authorized Channel ID for automated template ingestion (optional, e.g. -1001234567890)
+def _parse_channel_id(raw_id: str) -> Optional[int]:
+    val = raw_id.strip()
+    if not val:
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        return None
+
+CHANNEL_ID: Optional[int] = _parse_channel_id(os.getenv("CHANNEL_ID", ""))
 
 # Database configuration (supports relative paths and absolute persistent volume mounts)
 _raw_db_path = os.getenv("DB_PATH", "data/bot.db").strip()

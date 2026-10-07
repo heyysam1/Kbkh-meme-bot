@@ -166,6 +166,15 @@ async def handle_meme_text_input(message: types.Message, state: FSMContext):
         await message.answer("অনুগ্রহ করে কিছু টেক্সট লিখুন:")
         return
 
+    # Security: Limit maximum caption length to prevent CPU denial of service
+    MAX_CAPTION_LEN = 300
+    if len(text) > MAX_CAPTION_LEN:
+        await message.answer(
+            f"❌ <b>ক্যাপশনটি অতিরিক্ত দীর্ঘ!</b>\nসর্বোচ্চ {MAX_CAPTION_LEN} অক্ষরের মধ্যে লিখুন (আপনার টেক্সট: {len(text)} অক্ষর)।",
+            parse_mode="HTML",
+        )
+        return
+
     status_msg = await message.answer("⏳ <b>মিম রেন্ডার করা হচ্ছে...</b>", parse_mode="HTML")
 
     # 1. Download base template into memory
