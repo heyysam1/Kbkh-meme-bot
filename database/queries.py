@@ -93,15 +93,83 @@ async def set_watermark_position(user_id: int, position: str) -> None:
 # Template Operations
 # ------------------------------------------------------------------------------
 
-async def add_template(file_id: str, name: str, tags: str = "", is_trending: int = 0) -> int:
-    """Register a new meme template with its Telegram file_id and tags."""
+def _format_template_dict(row: Any) -> Dict[str, Any]:
+    """Ensure both 'title' and 'name' as well as 'media_type' are present in dictionary."""
+    if not row:
+        return {}
+    d = dict(row)
+    title = d.get("title") or d.get("name") or "Template"
+    d["title"] = title
+    d["name"] = title
+    d["media_type"] = d.get("media_type") or "photo"
+    return d
+
+async def add_template(
+    file_id: str,
+    name: Optional[str] = None,
+    tags: str = "",
+    is_trending: int = 0,
+    file_unique_id: Optional[str] = None,
+    media_type: str = "photo",
+    title: Optional[str] = None,
+    source_channel_id: Optional[str] = None,
+    source_channel_title: Optional[str] = None,
+) -> int:
+    """Register or update a meme template with its Telegram file_id, media_type, and tags."""
+    clean_file_id = file_id.strip()
+    resolved_title = (title or name or "Template").strip()
+    resolved_name = (name or title or "Template").strip()
+    tags_str = (tags or "").strip()
+
     async with get_db() as conn:
+        # Check if template already exists by file_id to prevent constraint crash
+        async with conn.execute(
+            "SELECT id FROM templates WHERE file_id = ?;", (clean_file_id,)
+        ) as cursor:
+            existing = await cursor.fetchone()
+            if existing:
+                t_id = existing["id"]
+                await conn.execute(
+                    """
+                    UPDATE templates
+                    SET title = ?, name = ?, tags = ?, file_unique_id = COALESCE(?, file_unique_id),
+                        media_type = ?, source_channel_id = COALESCE(?, source_channel_id),
+                        source_channel_title = COALESCE(?, source_channel_title)
+                    WHERE id = ?;
+                    """,
+                    (
+                        resolved_title,
+                        resolved_name,
+                        tags_str,
+                        file_unique_id,
+                        media_type,
+                        source_channel_id,
+                        source_channel_title,
+                        t_id,
+                    ),
+                )
+                await conn.commit()
+                return t_id
+
         cursor = await conn.execute(
             """
-            INSERT INTO templates (file_id, name, tags, is_trending, usage_count)
-            VALUES (?, ?, ?, ?, 0);
+            INSERT INTO templates (
+                file_id, file_unique_id, media_type, title, name, tags,
+                source_channel_id, source_channel_title, is_trending, usage_count
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0);
             """,
-            (file_id.strip(), name.strip(), tags.strip(), 1 if is_trending else 0),
+            (
+                clean_file_id,
+                file_unique_id,
+                media_type,
+                resolved_title,
+                resolved_name,
+                tags_str,
+                source_channel_id,
+                source_channel_title,
+                1 if is_trending else 0,
+            ),
         )
         await conn.commit()
         return cursor.lastrowid
@@ -113,7 +181,7 @@ async def get_template_by_id(template_id: int) -> Optional[Dict[str, Any]]:
             "SELECT * FROM templates WHERE id = ?;", (template_id,)
         ) as cursor:
             row = await cursor.fetchone()
-            return dict(row) if row else None
+            return _format_template_dict(row) if row else None
 
 async def get_all_templates(limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
     """Fetch paginated list of meme templates ordered by popularity."""
@@ -127,7 +195,7 @@ async def get_all_templates(limit: int = 50, offset: int = 0) -> List[Dict[str, 
             (limit, offset),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [_format_template_dict(r) for r in rows]
 
 async def get_trending_templates(limit: int = 10) -> List[Dict[str, Any]]:
     """Fetch high-scoring trending meme templates."""
@@ -142,7 +210,16 @@ async def get_trending_templates(limit: int = 10) -> List[Dict[str, Any]]:
             (limit,),
         ) as cursor:
             rows = await cursor.fetchall()
-            return [dict(r) for r in rows]
+            return [_format_template_dict(r) for r in rows]
+
+async def get_random_template() -> Optional[Dict[str, Any]]:
+    """Fetch a random meme template from the catalog."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM templates ORDER BY RANDOM() LIMIT 1;"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return _format_template_dict(row) if row else None
 
 async def increment_template_usage(template_id: int) -> None:
     """Increment popularity usage count when a meme is rendered."""

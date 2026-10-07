@@ -142,25 +142,29 @@ kbkh-meme-engine/
 ├── database/
 │   ├── __init__.py
 │   ├── db.py                 # Asynchronous SQLite connection pool & WAL init
-│   └── queries.py            # Async CRUD queries (templates, users, banners)
+│   ├── queries.py            # Async CRUD queries (templates, users, banners)
+│   └── schema.py             # Declarative schema & zero-downtime auto-migrations
 ├── handlers/
 │   ├── __init__.py
-│   ├── admin.py              # Channel listener, banner management, stats
+│   ├── admin.py              # Admin commands, retroactive bulk ingest & stats
+│   ├── channel.py            # Unrestricted multi-channel & multi-mime ingestion
 │   ├── meme_flow.py          # Interactive FSM generation & variant switching
-│   ├── search_flow.py        # Token search & template discovery carousel
+│   ├── search_flow.py        # Hybrid search, external fallback & carousel
 │   ├── settings.py           # Typography & custom watermark settings
-│   └── start.py              # Onboarding, /help, and main menu routing
+│   └── start.py              # Onboarding, command menu, and help routing
 ├── services/
 │   ├── __init__.py
 │   ├── font_manager.py       # Typography scanner, script detector & resolver
 │   ├── renderer.py           # In-memory Pillow graphics compositor
-│   └── search_engine.py      # Weighted token similarity & ranking logic
+│   └── search_engine.py      # Hybrid token similarity & external fallback API
 └── tests/
     ├── __init__.py
-    ├── test_database.py      # Isolated database lifecycle & query tests
+    ├── test_channel.py       # Multi-mime channel ingestion & metadata tests
+    ├── test_database.py      # Schema auto-migration & async CRUD tests
     ├── test_font_manager.py  # Typography discovery & fallback tests
     ├── test_renderer.py      # In-memory canvas, luminance & variant tests
-    └── test_search_engine.py # Search normalization & fuzzy token tests
+    ├── test_search_engine.py # Search normalization & fuzzy token tests
+    └── test_security.py      # Security hardening & audit regression tests
 ```
 
 ---

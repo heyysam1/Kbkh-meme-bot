@@ -23,43 +23,59 @@ def is_admin(user_id: int) -> bool:
     return user_id in config.ADMIN_IDS
 
 # ------------------------------------------------------------------------------
-# Channel Post Ingestion Listener
+# Admin Retroactive Bulk Ingestion (Forwarded Channel Posts & Direct Uploads)
 # ------------------------------------------------------------------------------
 
-@router.channel_post(F.photo)
-async def handle_channel_photo_post(message: types.Message):
+@router.message(F.chat.type == "private", F.photo | F.document | F.video | F.animation)
+async def handle_admin_retroactive_ingest(message: types.Message):
     """
-    Automated meme template ingestion listener:
-    1. Validates channel origin against config.CHANNEL_ID.
-    2. Captures incoming channel photo posts without downloading to disk.
-    3. Extracts largest resolution Telegram file_id.
-    4. Parses hashtags as search tags and remaining text as template title.
-    5. Records entry in SQLite templates table.
+    Allow admins to forward past channel posts (photos, documents, videos, animations)
+    directly to the bot's private chat to populate the template catalog retroactively.
     """
-    # Security: Ignore channel posts if no channel configured or post originates elsewhere
-    if not config.CHANNEL_ID or message.chat.id != config.CHANNEL_ID:
+    if not is_admin(message.from_user.id):
         return
-    file_id = message.photo[-1].file_id
-    caption = message.caption.strip() if message.caption else ""
 
-    # Extract hashtags (#tag) as searchable tags
-    hashtags = re.findall(r"#(\w+)", caption)
-    tags_str = ", ".join(hashtags)
+    from handlers.channel import extract_template_metadata
+    meta = extract_template_metadata(message)
+    if not meta:
+        return
 
-    # Remove hashtags from caption to get clean template title
-    clean_title = re.sub(r"#\w+", "", caption).strip()
-    if not clean_title:
-        clean_title = f"Template {file_id[-6:]}"
+    file_id, file_unique_id, media_type, title, tags_str = meta
+
+    # Extract origin channel info if forwarded
+    source_channel_id = None
+    source_channel_title = None
+
+    if hasattr(message, "forward_origin") and message.forward_origin:
+        origin = message.forward_origin
+        if getattr(origin, "type", "") == "channel" and getattr(origin, "chat", None):
+            source_channel_id = str(origin.chat.id)
+            source_channel_title = origin.chat.title
+    elif getattr(message, "forward_from_chat", None):
+        source_channel_id = str(message.forward_from_chat.id)
+        source_channel_title = message.forward_from_chat.title
 
     template_id = await add_template(
         file_id=file_id,
-        name=clean_title,
+        file_unique_id=file_unique_id,
+        media_type=media_type,
+        title=title,
+        name=title,
         tags=tags_str,
+        source_channel_id=source_channel_id,
+        source_channel_title=source_channel_title,
         is_trending=1 if "trending" in tags_str.lower() else 0,
     )
 
-    # Optional console log
-    print(f"✓ Channel Ingestion: Indexed template #{template_id} '{clean_title}' (Tags: {tags_str})")
+    channel_info = f" (চ্যানেল: <i>{source_channel_title}</i>)" if source_channel_title else ""
+    await message.reply(
+        f"✅ <b>টেমপ্লেট সফলভাবে ইনজেস্ট করা হয়েছে!</b>\n\n"
+        f"• <b>আইডি:</b> <code>#{template_id}</code>\n"
+        f"• <b>টাইটেল:</b> {title}\n"
+        f"• <b>মিডিয়া টাইপ:</b> <code>{media_type}</code>\n"
+        f"• <b>ট্যাগ:</b> <code>{tags_str or 'None'}</code>{channel_info}",
+        parse_mode="HTML",
+    )
 
 # ------------------------------------------------------------------------------
 # Banner Management

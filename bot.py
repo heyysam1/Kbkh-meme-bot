@@ -4,10 +4,11 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import BotCommand, BotCommandScopeDefault
 
 import config
 from database.db import init_db
-from handlers import start, meme_flow, search_flow, settings, admin
+from handlers import start, meme_flow, search_flow, settings, admin, channel
 
 # Configure logging
 logging.basicConfig(
@@ -17,18 +18,33 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kbkh_meme_bot")
 
+async def set_bot_commands(bot: Bot) -> None:
+    """Register official Bot Commands for native Telegram Menu and autocomplete."""
+    commands = [
+        BotCommand(command="start", description="🚀 বট শুরু করুন ও ড্যাশবোর্ড দেখুন"),
+        BotCommand(command="template", description="📂 সব মিম টেমপ্লেট ব্রাউজ করুন"),
+        BotCommand(command="search", description="🔍 লোকাল ও ট্রেন্ডিং মিম খুঁজুন"),
+        BotCommand(command="random", description="🎲 র্যান্ডম মিম টেমপ্লেট পান"),
+        BotCommand(command="help", description="ℹ️ ব্যবহারের নিয়ম ও গাইড"),
+    ]
+    await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
+    logger.info("✓ Telegram official bot commands registered successfully.")
+
 async def on_startup(bot: Bot) -> None:
     """Execute initialization routines before polling starts."""
     logger.info("Initializing KBKH Meme Bot subsystems...")
-    # Initialize SQLite database and tables
+    # Initialize SQLite database, schema, and auto-migrations
     await init_db()
-    logger.info("✓ SQLite database and schema initialized successfully.")
+    logger.info("✓ SQLite database, schema, and migrations initialized successfully.")
 
     # Validate asset paths
     if not config.WHITE_LOGO_PATH.exists() or not config.BLACK_LOGO_PATH.exists():
         logger.warning("⚠️ Warning: One or more KBKH brand logos were not found in assets/logos/.")
     else:
         logger.info("✓ KBKH brand logo assets verified.")
+
+    # Register Bot command menu
+    await set_bot_commands(bot)
 
     bot_info = await bot.get_me()
     logger.info(f"✓ Bot started successfully as @{bot_info.username} (ID: {bot_info.id})")
@@ -49,8 +65,9 @@ async def main() -> None:
     # Initialize Dispatcher with in-memory FSM storage
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Register modular routers
-    dp.include_router(admin.router)       # Admin commands & channel listener
+    # Register modular routers (channel ingestion first, then admin, start, flows)
+    dp.include_router(channel.router)     # Multi-channel unrestricted ingestion
+    dp.include_router(admin.router)       # Admin commands & retroactive bulk ingestion
     dp.include_router(start.router)       # /start, /help, main menu
     dp.include_router(meme_flow.router)   # FSM meme generation & post-edit actions
     dp.include_router(search_flow.router) # Search & template discovery
@@ -61,7 +78,8 @@ async def main() -> None:
 
     try:
         logger.info("Starting long-polling event loop...")
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
+        allowed_updates = ["message", "callback_query", "channel_post", "edited_channel_post"]
+        await dp.start_polling(bot, allowed_updates=allowed_updates)
     finally:
         await bot.session.close()
         logger.info("Bot session closed cleanly.")
