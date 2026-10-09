@@ -404,6 +404,8 @@ def _sync_render_worker(
             wrapped_text,
             font=font,
             fill=parsed_text_color,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill if stroke_width > 0 else None,
             align=align_key,
             spacing=int(font.size * 0.2),
         )
@@ -435,11 +437,23 @@ def _sync_render_worker(
             cleaned_text, font_path, max(18, round(ticker_h * 0.40)), ticker_max_w, ticker_h - 10, dummy_draw
         )
         news_x = label_w + 14
+        if align_key == "right":
+            news_x = w - nw - 14
+        elif align_key == "center":
+            news_x = label_w + 14 + max(0, (ticker_max_w - nw) // 2)
         news_y = ticker_y + (ticker_h - nh) // 2 + y_off
         if text_bg:
             canvas = _with_text_bg(canvas, (news_x, news_y, news_x + nw, news_y + nh))
             draw = ImageDraw.Draw(canvas)
-        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=parsed_text_color if custom_color else (255, 230, 0), align=align_key)
+        draw.multiline_text(
+            (news_x, news_y),
+            wrapped_news,
+            font=news_font,
+            fill=parsed_text_color if custom_color else (255, 230, 0),
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill if stroke_width > 0 else None,
+            align=align_key,
+        )
 
     else:
         # Variant: Top Banner (Default White/Dark Header extending canvas upward)
@@ -468,6 +482,8 @@ def _sync_render_worker(
             wrapped_text,
             font=font,
             fill=text_c,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_fill if stroke_width > 0 else None,
             align=align_key,
             spacing=int(font.size * 0.2),
         )
@@ -572,7 +588,7 @@ def _sync_render_worker(
                 pass
 
     # --------------------------------------------------------------------------
-    # Opt-In Promotional Banner Extension
+    # Opt-In Promotional Banner Extension (position: top / bottom / breaking)
     # --------------------------------------------------------------------------
     if banner_bytes is not None:
         try:
@@ -587,6 +603,7 @@ def _sync_render_worker(
                 banner_resized = banner_img.resize((canvas.width, new_banner_h), Image.Resampling.LANCZOS)
 
                 current_w, current_h = canvas.size
+                # Promo banner always goes at the bottom.
                 extended_canvas = Image.new("RGB", (current_w, current_h + new_banner_h))
                 extended_canvas.paste(canvas, (0, 0))
                 extended_canvas.paste(banner_resized, (0, current_h))

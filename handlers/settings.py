@@ -127,13 +127,16 @@ async def handle_settings_command(event: types.Message | types.CallbackQuery, st
         await message.answer(dashboard_text, reply_markup=get_settings_keyboard(user, lang), parse_mode="HTML")
 
 @router.callback_query(F.data == "menu_home")
-async def cb_menu_home(callback: types.CallbackQuery):
+async def cb_menu_home(callback: types.CallbackQuery, state: Optional[FSMContext] = None):
     """Return to main dashboard."""
     from handlers.start import get_main_menu_keyboard
     await callback.answer()
+    if state:
+        await state.clear()
+    lang = await get_user_lang(callback.from_user.id)
     await callback.message.edit_text(
-        "<b>[KBKH MEME ENGINE - DASHBOARD]</b>\n\nSelect an option below to proceed:",
-        reply_markup=get_main_menu_keyboard(),
+        t("start.welcome", lang).format(name=callback.from_user.full_name),
+        reply_markup=get_main_menu_keyboard(lang),
         parse_mode="HTML",
     )
 
@@ -204,6 +207,12 @@ async def handle_receive_watermark(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(t("settings.success_wm_saved", lang))
 
+@router.message(SettingsSG.waiting_for_watermark, F.text)
+async def handle_watermark_wrong_input(message: types.Message):
+    """Guide user who sent text instead of a watermark photo (avoid dead end)."""
+    lang = await get_user_lang(message.from_user.id)
+    await message.answer(t("settings.upload_hint", lang))
+
 # ------------------------------------------------------------------------------
 # Watermark Text Prompt
 # ------------------------------------------------------------------------------
@@ -238,6 +247,12 @@ async def handle_receive_wm_text(message: types.Message, state: FSMContext):
     await update_user_watermark_settings(message.from_user.id, text=text_val, enabled=1)
     await state.clear()
     await message.answer(t("settings.success_wm_text_set", lang).format(text=text_val))
+
+@router.message(SettingsSG.waiting_for_wm_text, F.photo | F.document)
+async def handle_wm_text_wrong_input(message: types.Message):
+    """Guide user who sent media instead of watermark text (avoid dead end)."""
+    lang = await get_user_lang(message.from_user.id)
+    await message.answer(t("settings.wm_text_hint", lang))
 
 @router.callback_query(F.data == "cb_cancel_settings")
 async def handle_cancel_settings(callback: types.CallbackQuery, state: FSMContext):

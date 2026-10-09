@@ -289,6 +289,12 @@ async def handle_banner_upload_cancel(message: types.Message, state: FSMContext)
     await state.clear()
     await message.answer(t("common.cancel", lang))
 
+@router.message(BannerSG.waiting_for_photo)
+async def handle_banner_upload_invalid(message: types.Message):
+    """Catch-all: remind the admin to send a photo (or /cancel) while waiting."""
+    lang = await get_user_lang(message.from_user.id)
+    await message.answer(t("admin.banner_send_photo_reminder", lang))
+
 @router.message(Command("banners"), StateFilter("*"), flags={"state": "*"})
 async def handle_list_banners_admin(message: types.Message, state: Optional[FSMContext] = None):
     """List all registered promotional banners across any state."""

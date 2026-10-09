@@ -1,4 +1,5 @@
 import io
+import logging
 import random
 from typing import Optional
 from aiogram import Router, types, F
@@ -24,6 +25,8 @@ from services.search_engine import (
 )
 
 router = Router(name="search_flow_router")
+
+logger = logging.getLogger("kbkh_meme_bot.search_flow")
 
 # log_template_use is added by a sibling agent; import defensively so the bot
 # keeps working until it lands.
@@ -56,9 +59,10 @@ def build_external_choice_card(ext_id: str, lang: str = "bn") -> InlineKeyboardM
     )
 
 @router.callback_query(F.data == "menu_search")
-async def cb_menu_search(callback: types.CallbackQuery):
-    """Prompt user to type their search query."""
+async def cb_menu_search(callback: types.CallbackQuery, state: FSMContext):
+    """Prompt user to type their search query, leaving any active flow first."""
     await callback.answer()
+    await state.clear()
     lang = await get_user_lang(callback.from_user.id)
     await callback.message.answer(
         t("search.prompt", lang),
@@ -224,10 +228,15 @@ async def handle_external_use_template(callback: types.CallbackQuery, state: FSM
     # Upload to Telegram to obtain canonical file_id
     title = ext_item.get("title") or ext_item.get("name") or "External Template"
     input_file = BufferedInputFile(img_bytes, filename="template.jpg")
-    sent = await callback.message.answer_photo(
-        photo=input_file,
-        caption=t("search.template_ready", lang).format(title=title),
-    )
+    try:
+        sent = await callback.message.answer_photo(
+            photo=input_file,
+            caption=t("search.template_ready", lang).format(title=title),
+        )
+    except Exception:
+        logger.exception("Failed to upload external template %s to Telegram", ext_id)
+        await status_msg.edit_text(t("search.err_fetch", lang))
+        return
     file_id = sent.photo[-1].file_id
     file_unique_id = sent.photo[-1].file_unique_id
     try:
@@ -235,49 +244,67 @@ async def handle_external_use_template(callback: types.CallbackQuery, state: FSM
     except Exception:
         pass
 
-    # Save to local SQLite database catalog for zero-disk permanent caching
-    template_id = await add_template(
-        file_id=file_id,
-        file_unique_id=file_unique_id,
-        media_type="photo",
-        title=title,
-        name=title,
-        tags=f"external, {ext_item.get('source', '')}",
-        source_channel_id="external_api",
-        source_channel_title=ext_item.get("source", "External"),
-        added_by=callback.from_user.id,
-    )
+    # Save to local SQLite database catalog for zero-disk permanent caching,
+    # then enter the editor. Guarded so any failure here shows an error
+    # instead of dying silently after the photo was already sent.
+    try:
+        template_id = await add_template(
+            file_id=file_id,
+            file_unique_id=file_unique_id,
+            media_type="photo",
+            title=title,
+            name=title,
+            tags=f"external, {ext_item.get('source', '')}",
+            source_channel_id="external_api",
+            source_channel_title=ext_item.get("source", "External"),
+            added_by=callback.from_user.id,
+        )
 
-    if log_template_use is not None and template_id:
-        try:
-            await log_template_use(callback.from_user.id, template_id)
-        except Exception:
-            pass
+        if log_template_use is not None and template_id:
+            try:
+                await log_template_use(callback.from_user.id, template_id)
+            except Exception:
+                pass
 
-    # Initialize EditorSG State
-    user = await upsert_user(callback.from_user.id)
-    preferred_font = user.get("preferred_font")
-    if preferred_font == "default" or not preferred_font:
-        preferred_font = None
+        # Initialize EditorSG state with the same defaults as the normal
+        # catalog entry path so all editor features work on online templates.
+        user = await upsert_user(callback.from_user.id)
+        preferred_font = user.get("preferred_font")
+        if preferred_font == "default" or not preferred_font:
+            preferred_font = None
 
-    await state.clear()
-    await state.update_data(
-        template_id=template_id,
-        file_id=file_id,
-        title=title,
-        font_key=preferred_font,
-        variant="overlay",
-        text_color="white",
-        stroke_width=4,
-        case_mode="raw",
-        filter="none",
-        watermark_enabled=bool(user.get("watermark_enabled", 1)),
-        watermark_pos=user.get("watermark_position", "bottom_right"),
-        watermark_scale=user.get("watermark_scale", 1.0),
-        watermark_opacity=user.get("watermark_opacity", 0.8),
-        is_clean=False,
-    )
-    await state.set_state(EditorSG.waiting_for_text)
+        await state.clear()
+        await state.update_data(
+            template_id=template_id,
+            file_id=file_id,
+            title=title,
+            font_key=preferred_font,
+            variant="overlay",
+            text_color="white",
+            stroke_width=4,
+            case_mode="raw",
+            filter="none",
+            watermark_enabled=bool(user.get("watermark_enabled", 1)),
+            watermark_pos=user.get("watermark_position", "bottom_right"),
+            watermark_scale=user.get("watermark_scale", 1.0),
+            watermark_opacity=user.get("watermark_opacity", 0.8),
+            is_clean=False,
+            text_offset_y=0,
+            font_scale=1.0,
+            text_align="center",
+            stroke_color=None,
+            text_bg=False,
+            flip=False,
+            crop="off",
+            brightness=1.0,
+            contrast=1.0,
+            banner_id=None,
+        )
+        await state.set_state(EditorSG.waiting_for_text)
+    except Exception:
+        logger.exception("Failed to ingest external template %s into editor", ext_id)
+        await callback.message.answer(t("search.err_fetch", lang))
+        return
 
     cancel_kb = InlineKeyboardMarkup(
         inline_keyboard=[[InlineKeyboardButton(text=t("misc.cancel", lang), callback_data="ed_cancel")]]
@@ -308,11 +335,15 @@ async def handle_external_download_template(callback: types.CallbackQuery):
     file_photo = BufferedInputFile(img_bytes, filename=f"{title}.jpg")
     file_doc = BufferedInputFile(img_bytes, filename=f"{title}.jpg")
 
-    await callback.message.answer_photo(
-        photo=file_photo,
-        caption=t("search.preview_caption", lang).format(title=title),
-    )
-    await callback.message.answer_document(
-        document=file_doc,
-        caption=t("search.original_caption", lang).format(title=title),
-    )
+    try:
+        await callback.message.answer_photo(
+            photo=file_photo,
+            caption=t("search.preview_caption", lang).format(title=title),
+        )
+        await callback.message.answer_document(
+            document=file_doc,
+            caption=t("search.original_caption", lang).format(title=title),
+        )
+    except Exception:
+        logger.exception("Failed to deliver external template %s", ext_id)
+        await callback.message.answer(t("search.err_download", lang))
