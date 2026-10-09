@@ -178,7 +178,10 @@ def _sync_render_worker(
     Zero local disk writing; executes strictly in-memory.
     """
     # 1. Load base template
-    base_image = Image.open(io.BytesIO(template_bytes)).convert("RGB")
+    try:
+        base_image = Image.open(io.BytesIO(template_bytes)).convert("RGB")
+    except Exception as e:
+        raise ValueError("Unsupported template media: not a readable image") from e
     w, h = base_image.size
 
     # Downscale excessively large template images to prevent container OOM
@@ -206,6 +209,9 @@ def _sync_render_worker(
 
     # Parse colors and stroke parameters
     parsed_text_color = parse_color(text_color)
+    # A non-default color choice must survive layout variants that otherwise
+    # force their own text color (top_banner, breaking_news).
+    custom_color = text_color.strip().lower() not in ("white", "#ffffff")
     is_bright_text = (0.299 * parsed_text_color[0] + 0.587 * parsed_text_color[1] + 0.114 * parsed_text_color[2]) >= 128
     default_stroke_fill = (0, 0, 0) if is_bright_text else (255, 255, 255)
 
@@ -339,13 +345,13 @@ def _sync_render_worker(
         )
         news_x = label_w + 14
         news_y = ticker_y + (ticker_h - nh) // 2
-        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=(255, 230, 0))
+        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=parsed_text_color if custom_color else (255, 230, 0))
 
     else:
         # Variant: Top Banner (Default White/Dark Header extending canvas upward)
         is_dark = variant_key in ("dark_header", "dark", "variant_b")
         header_bg_color = (26, 26, 26) if is_dark else (255, 255, 255)
-        text_c = (255, 255, 255) if is_dark else (0, 0, 0)
+        text_c = parsed_text_color if custom_color else ((255, 255, 255) if is_dark else (0, 0, 0))
 
         max_header_height = round(h * 0.45)
         wrapped_text, font, tw, th = _fit_text(
@@ -438,6 +444,7 @@ def _sync_render_worker(
 
                 canvas.paste(wm_resized, pos_xy, mask=wm_resized)
             except Exception:
+                logger.warning("Watermark image overlay failed; continuing without watermark.", exc_info=True)
                 pass
 
         elif watermark_text:
@@ -464,6 +471,7 @@ def _sync_render_worker(
                 # Draw subtle watermark text with outline
                 draw.text(pos_xy, watermark_text, font=wm_font, fill=(255, 255, 255, int(255 * watermark_opacity)), stroke_width=2, stroke_fill=(0, 0, 0))
             except Exception:
+                logger.warning("Watermark text overlay failed; continuing without watermark.", exc_info=True)
                 pass
 
     # --------------------------------------------------------------------------
@@ -487,6 +495,7 @@ def _sync_render_worker(
                 extended_canvas.paste(banner_resized, (0, current_h))
                 canvas = extended_canvas
         except Exception:
+            logger.warning("Promotional banner extension failed; continuing without banner.", exc_info=True)
             pass
 
     # Export buffer
