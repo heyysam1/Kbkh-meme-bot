@@ -30,6 +30,7 @@ from database.queries import (
 from services.font_manager import font_manager
 from services.i18n import t
 from services.renderer import render_meme
+from handlers.admin import is_admin
 
 logger = logging.getLogger("kbkh_meme_bot.editor")
 router = Router(name="editor_router")
@@ -775,6 +776,7 @@ async def handle_initiate_meme_creation(callback: types.CallbackQuery, state: FS
         crop="off",
         brightness=1.0,
         contrast=1.0,
+        banner_id=None,
     )
     await state.set_state(EditorSG.waiting_for_text)
 
@@ -834,6 +836,20 @@ async def handle_meme_text_input(message: types.Message, state: FSMContext):
 
 # Backward compatibility alias
 handle_receive_editor_text = handle_meme_text_input
+
+
+@router.message(EditorSG.editing, F.text, ~F.text.startswith("/"))
+async def handle_stray_text_in_editor(message: types.Message):
+    """Guide users who type text mid-edit instead of silently ignoring it."""
+    lang = await _lang_of(message.from_user.id)
+    await message.answer(t("editor.hint_stray_text", lang))
+
+
+@router.message(EditorSG.editing, F.photo)
+async def handle_stray_photo_in_editor(message: types.Message):
+    """Guide users who send a photo mid-edit instead of silently ignoring it."""
+    lang = await _lang_of(message.from_user.id)
+    await message.answer(t("editor.hint_stray_photo", lang))
 
 
 # ------------------------------------------------------------------------------
@@ -1011,8 +1027,18 @@ async def cb_toggle_wm(callback: types.CallbackQuery, state: FSMContext):
     """Toggle watermark ON/OFF and immediately update preview."""
     lang = await _lang_of(callback.from_user.id)
     data = await state.get_data()
-    await _push_history(state, data)
     new_wm = not data.get("watermark_enabled", True)
+    if new_wm:
+        # Enabling is pointless when the user never configured a watermark;
+        # say so instead of silently toggling a no-op flag.
+        try:
+            user = await get_user(callback.from_user.id)
+        except Exception:
+            user = None
+        if user and not user.get("watermark_file_id") and not user.get("watermark_text"):
+            await callback.answer(t("editor.wm_not_set", lang), show_alert=True)
+            return
+    await _push_history(state, data)
     data["watermark_enabled"] = new_wm
     await state.update_data(watermark_enabled=new_wm)
     await _update_live_preview(callback, state, data, lang=lang)
@@ -1266,8 +1292,13 @@ async def cb_undo(callback: types.CallbackQuery, state: FSMContext):
     if prev is None:
         await callback.answer(t("editor.undo_empty", lang), show_alert=True)
         return
-    await state.update_data(history=remaining)
-    await state.update_data(**prev)
+    # Full restore: clear first so keys added after the snapshot was taken
+    # (e.g. "text" entered after the snapshot) are dropped too. Otherwise
+    # update_data leaves them behind and the undo looks like it did nothing.
+    # template_bytes is re-fetched from file_id on the next render.
+    await state.clear()
+    await state.update_data(history=remaining, **prev)
+    await state.set_state(EditorSG.editing)
     fresh = await state.get_data()
     await callback.answer(t("editor.undone", lang))
     await _update_live_preview(callback, state, fresh, lang=lang)
@@ -1307,15 +1338,9 @@ async def cb_shuffle_style(callback: types.CallbackQuery, state: FSMContext):
 # Promotional Banner Controls (user-side opt-in banners)
 # ------------------------------------------------------------------------------
 
-@router.callback_query(F.data == "edit:banner:menu")
-async def cb_banner_menu(callback: types.CallbackQuery):
-    """Present opt-in promotional banner choices from the database."""
-    lang = await _lang_of(callback.from_user.id)
-    banners = await get_all_banners()
-    if not banners:
-        await callback.answer(t("editor.no_banners", lang), show_alert=True)
-        return
 
+def _banner_menu_kb(banners, lang: str) -> InlineKeyboardMarkup:
+    """Build the banner picker submenu keyboard."""
     rows = []
     for b in banners:
         name = b.get("name") or f"Banner #{b['id']}"
@@ -1325,7 +1350,25 @@ async def cb_banner_menu(callback: types.CallbackQuery):
         ])
     rows.append([InlineKeyboardButton(text=t("editor.btn_remove_banner", lang), callback_data="edit:banner:remove")])
     rows.append([InlineKeyboardButton(text=t("editor.back_editor", lang), callback_data="edit:back")])
-    await _show_submenu(callback, InlineKeyboardMarkup(inline_keyboard=rows), t("editor.select_banner", lang))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data == "edit:banner:menu")
+async def cb_banner_menu(callback: types.CallbackQuery, state: FSMContext):
+    """Present opt-in promotional banner choices from the database."""
+    lang = await _lang_of(callback.from_user.id)
+    banners = await get_all_banners()
+    if not banners:
+        if is_admin(callback.from_user.id):
+            msg = t("editor.banner_empty_admin", lang)
+        else:
+            msg = t("editor.no_banners", lang)
+        await callback.answer(msg, show_alert=True)
+        return
+
+    data = await state.get_data()
+    kb = _banner_menu_kb(banners, lang)
+    await _show_submenu(callback, kb, t("editor.select_banner", lang))
 
 
 @router.callback_query(F.data.startswith("edit:banner:apply:"))
@@ -1353,7 +1396,9 @@ async def cb_banner_apply(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(banner_id=banner["id"])
     await callback.answer(t("editor.banner_applied", lang))
     try:
-        await _update_live_preview(callback, state, data, lang=lang)
+        banners = await get_all_banners()
+        kb = _banner_menu_kb(banners, lang)
+        await _update_live_preview(callback, state, data, lang=lang, custom_kb=kb)
     except Exception as e:
         logger.warning("Banner apply preview failed: %s", e)
         await callback.answer(t("editor.err_banner_apply", lang), show_alert=True)
@@ -1364,6 +1409,12 @@ async def cb_banner_remove(callback: types.CallbackQuery, state: FSMContext):
     """Detach the promotional banner and re-render the live preview."""
     lang = await _lang_of(callback.from_user.id)
     data = await state.get_data()
+    if not data.get("banner_id"):
+        await callback.answer(
+            t("editor.banner_not_applied", lang),
+            show_alert=True,
+        )
+        return
     await _push_history(state, data)
     data["banner_id"] = None
     await state.update_data(banner_id=None)
@@ -1506,7 +1557,7 @@ async def cb_cancel_editor(callback: types.CallbackQuery, state: FSMContext):
     """Cancel editing session and clear state."""
     lang = await _lang_of(callback.from_user.id)
     await state.clear()
-    await callback.answer(t("editor.editor_closed", lang))
+    await callback.answer()
     try:
         await callback.message.delete()
     except Exception:
