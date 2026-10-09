@@ -116,7 +116,7 @@ async def search_templates(query: str, limit: int = 4) -> List[Dict[str, Any]]:
 
 async def _fetch_imgflip_memes() -> List[Dict[str, Any]]:
     """Fetch top 100 popular blank meme templates from Imgflip API."""
-    global _EXTERNAL_MEMES_CACHE, _EXTERNAL_CACHE_TIMESTAMP
+    global _EXTERNAL_MEMES_CACHE, _EXTERNAL_CACHE_TIMESTAMP, _EXTERNAL_REGISTRY
     now = time.time()
     if _EXTERNAL_MEMES_CACHE and (now - _EXTERNAL_CACHE_TIMESTAMP) < _EXTERNAL_CACHE_TTL:
         return _EXTERNAL_MEMES_CACHE
@@ -132,6 +132,8 @@ async def _fetch_imgflip_memes() -> List[Dict[str, Any]]:
                     if memes:
                         _EXTERNAL_MEMES_CACHE = memes
                         _EXTERNAL_CACHE_TIMESTAMP = now
+                        # Old external ids are stale after a refresh; bound the registry.
+                        _EXTERNAL_REGISTRY.clear()
                         return memes
     except Exception as e:
         logger.warning("Imgflip API fetch error: %s", e)
@@ -188,7 +190,10 @@ async def search_external_memes(query: str, limit: int = 3) -> List[Dict[str, An
             score = max(score, 0.75)
 
         if score >= 0.40:
-            ext_id = f"ext_if_{meme['id']}"
+            mid = meme.get("id")
+            if not mid:
+                continue
+            ext_id = f"ext_if_{mid}"
             item = {
                 "id": ext_id,
                 "title": meme.get("name"),

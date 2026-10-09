@@ -1,9 +1,11 @@
 from typing import Optional
 from aiogram import Router, types
 from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from database.queries import upsert_user
+from database.queries import get_template_by_id, upsert_user
+from handlers.editor import EditorSG
 
 router = Router(name="start_router")
 
@@ -12,8 +14,8 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="[Browse Catalog]", callback_data="cb_grid_page:1"),
-                InlineKeyboardButton(text="[+ Add Template]", callback_data="cb_add_template"),
+                InlineKeyboardButton(text="[Browse Catalog]", callback_data="tpl_grid:1"),
+                InlineKeyboardButton(text="[+ Add Template]", callback_data="action_add_template"),
             ],
             [
                 InlineKeyboardButton(text="[Search Memes]", callback_data="menu_search"),
@@ -23,6 +25,63 @@ def get_main_menu_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="[Help / Guide]", callback_data="menu_help"),
             ],
         ]
+    )
+
+@router.message(CommandStart(deep_link=True), StateFilter("*"), flags={"state": "*"})
+async def handle_deep_link(message: types.Message, state: FSMContext, command: CommandObject):
+    """Handle /start deep links (e.g. t.me/<bot>?start=tpl_123) by jumping into the editor.
+
+    Registered above handle_start because plain CommandStart() also matches
+    deep-link payloads; aiogram checks handlers in registration order.
+    """
+    args = (command.args or "").strip()
+    template_id_str = args[4:] if args.startswith("tpl_") else ""
+    template = (
+        await get_template_by_id(int(template_id_str))
+        if template_id_str.isdigit()
+        else None
+    )
+    if not template:
+        if args:
+            await message.answer("[Template not found.]")
+        await handle_start(message, state)
+        return
+
+    user = await upsert_user(message.from_user.id)
+    preferred_font = user.get("preferred_font")
+    if preferred_font == "default" or not preferred_font:
+        preferred_font = None
+
+    await state.clear()
+    await state.update_data(
+        template_id=template["id"],
+        file_id=template["file_id"],
+        title=template.get("title") or template.get("name") or "Template",
+        font_key=preferred_font,
+        variant="overlay",
+        text_color="white",
+        stroke_width=4,
+        case_mode="raw",
+        filter="none",
+        watermark_enabled=bool(user.get("watermark_enabled", 1)),
+        watermark_pos=user.get("watermark_position", "bottom_right"),
+        watermark_scale=user.get("watermark_scale", 1.0),
+        watermark_opacity=user.get("watermark_opacity", 0.8),
+        is_clean=False,
+    )
+    await state.set_state(EditorSG.waiting_for_text)
+
+    cancel_kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="[Cancel]", callback_data="edit:cancel")]]
+    )
+
+    title = template.get("title") or template.get("name") or "Template"
+    await message.answer(
+        f"[Meme Editor - Selected: '{title}']\n"
+        f"Enter the text for your meme.\n\n"
+        f"Tip: Use '|' to divide top and bottom lines for overlay memes.\n"
+        f"(Example: 'TOP TEXT | BOTTOM TEXT')",
+        reply_markup=cancel_kb,
     )
 
 @router.message(CommandStart(), StateFilter("*"), flags={"state": "*"})

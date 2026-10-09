@@ -13,6 +13,7 @@ from database.queries import (
     delete_banner,
     add_alias,
     get_all_aliases,
+    delete_alias,
     get_all_templates,
     add_source,
     get_all_sources,
@@ -203,32 +204,35 @@ async def handle_delete_source_callback(callback: types.CallbackQuery):
         return
 
     source_id_str = callback.data.split(":", 1)[1]
-    if source_id_str.isdigit():
-        await remove_source(int(source_id_str))
-        await callback.answer("[Source removed]")
-        # Refresh the list
-        sources = await get_all_sources()
-        if not sources:
-            await callback.message.edit_text(
-                "[Info: No external sources configured. Use /add_source <url> [name] to add one.]"
-            )
-            return
+    if not source_id_str.isdigit():
+        await callback.answer("[Error: Invalid source ID.]", show_alert=True)
+        return
 
-        lines = ["<b>[CONFIGURED EXTERNAL SOURCES]</b>\n"]
-        kb_rows = []
-        for s in sources:
-            lines.append(f"• ID <code>{s['id']}</code> | <b>{s['name']}</b>\n  <code>{s['url']}</code>")
-            kb_rows.append([
-                InlineKeyboardButton(
-                    text=f"[Remove #{s['id']}]",
-                    callback_data=f"cb_del_source:{s['id']}",
-                )
-            ])
+    await remove_source(int(source_id_str))
+    await callback.answer("[Source removed]")
+    # Refresh the list
+    sources = await get_all_sources()
+    if not sources:
         await callback.message.edit_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
-            parse_mode="HTML",
+            "[Info: No external sources configured. Use /add_source <url> [name] to add one.]"
         )
+        return
+
+    lines = ["<b>[CONFIGURED EXTERNAL SOURCES]</b>\n"]
+    kb_rows = []
+    for s in sources:
+        lines.append(f"• ID <code>{s['id']}</code> | <b>{s['name']}</b>\n  <code>{s['url']}</code>")
+        kb_rows.append([
+            InlineKeyboardButton(
+                text=f"[Remove #{s['id']}]",
+                callback_data=f"cb_del_source:{s['id']}",
+            )
+        ])
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="HTML",
+    )
 
 # ------------------------------------------------------------------------------
 # Banner Management
@@ -369,6 +373,24 @@ async def handle_list_aliases_command(message: types.Message, state: Optional[FS
         lines.append(f"• <code>{a['alias_term']}</code> -&gt; <b>{a['canonical_name']}</b>")
 
     await message.answer("\n".join(lines), parse_mode="HTML")
+
+@router.message(Command("delalias"), StateFilter("*"), flags={"state": "*"})
+async def handle_delete_alias_command(message: types.Message, state: Optional[FSMContext] = None):
+    """Delete a registered alias mapping across any state."""
+    if state:
+        await state.clear()
+    if not is_admin(message.from_user.id):
+        return
+
+    term = message.text[len("/delalias"):].strip()
+    if not term:
+        await message.answer("[Usage: /delalias <term>]")
+        return
+
+    if await delete_alias(term):
+        await message.answer(f"[Success: Alias <code>{term}</code> removed.]", parse_mode="HTML")
+    else:
+        await message.answer(f"[Info: No alias found for <code>{term}</code>.]", parse_mode="HTML")
 
 # ------------------------------------------------------------------------------
 # Admin Statistics

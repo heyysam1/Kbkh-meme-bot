@@ -1,7 +1,8 @@
 import io
 import random
+from typing import Optional
 from aiogram import Router, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -111,8 +112,6 @@ async def handle_random_template(message: types.Message, state: Optional[FSMCont
 
     await message.answer("[Info: No templates currently available. Upload one using /add_template]")
 
-from aiogram.filters import Command, StateFilter
-
 @router.message(Command("search"), StateFilter("*"), flags={"state": "*"})
 async def handle_search_command(message: types.Message, state: Optional[FSMContext] = None):
     """Handle /search <keyword> command across any state and clear state."""
@@ -126,7 +125,7 @@ async def handle_search_command(message: types.Message, state: Optional[FSMConte
     query = parts[1].strip()
     await process_search_query(message, query)
 
-@router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
+@router.message(StateFilter(None), F.chat.type == "private", F.text, ~F.text.startswith("/"))
 async def handle_text_search_fallback(message: types.Message):
     """Catch general text queries strictly outside any active FSM state as search attempts."""
     query = message.text.strip()

@@ -60,6 +60,44 @@ CREATE TABLE IF NOT EXISTS sources (
     is_active INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Scraped URLs table (dedupe tracking for background source scraper)
+CREATE TABLE IF NOT EXISTS scraped_urls (
+    url TEXT PRIMARY KEY,
+    source_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Favorites table (user bookmarked templates)
+CREATE TABLE IF NOT EXISTS favorites (
+    user_id INTEGER NOT NULL,
+    template_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, template_id)
+);
+
+-- Drafts table (one saved meme draft per user, REPLACE semantics)
+CREATE TABLE IF NOT EXISTS drafts (
+    user_id INTEGER PRIMARY KEY,
+    template_id INTEGER,
+    file_id TEXT NOT NULL,
+    text TEXT,
+    variant TEXT DEFAULT 'overlay',
+    text_color TEXT DEFAULT 'white',
+    stroke_width INTEGER DEFAULT 4,
+    case_mode TEXT DEFAULT 'raw',
+    filter_name TEXT DEFAULT 'none',
+    font_key TEXT,
+    watermark_enabled INTEGER DEFAULT 1,
+    watermark_pos TEXT DEFAULT 'bottom_right',
+    watermark_scale REAL DEFAULT 1.0,
+    watermark_file_id TEXT,
+    watermark_text TEXT,
+    watermark_opacity REAL DEFAULT 0.8,
+    banner_id INTEGER,
+    is_clean INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 async def auto_migrate(conn: aiosqlite.Connection) -> None:
@@ -123,3 +161,4 @@ async def auto_migrate(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_banners_default ON banners(is_default DESC);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_aliases_term ON aliases(alias_term);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_active ON sources(is_active);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);")

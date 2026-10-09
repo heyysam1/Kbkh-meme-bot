@@ -13,6 +13,10 @@ from database.queries import (
     get_template_by_id,
     delete_template,
     get_random_template,
+    is_favorite,
+    add_favorite,
+    remove_favorite,
+    get_favorites,
 )
 
 router = Router(name="catalog_router")
@@ -56,12 +60,18 @@ def build_catalog_grid_keyboard(templates: list, page: int, total_pages: int) ->
 
     return builder.as_markup()
 
-def build_template_detail_keyboard(template_id: int, page: int, is_admin_user: bool = False) -> InlineKeyboardMarkup:
+def build_template_detail_keyboard(template_id: int, page: int, is_admin_user: bool = False, is_fav: bool = False) -> InlineKeyboardMarkup:
     """Action buttons for template detail view."""
     buttons = [
         [
             InlineKeyboardButton(text="[Create Meme]", callback_data=f"btn_create:{template_id}"),
             InlineKeyboardButton(text="[Download Raw]", callback_data=f"btn_raw:{template_id}"),
+        ],
+        [
+            InlineKeyboardButton(
+                text="[Remove from Favorites]" if is_fav else "[Add to Favorites]",
+                callback_data=f"fav_toggle:{template_id}:{page}",
+            ),
         ],
         [
             InlineKeyboardButton(text="[Watermark Settings]", callback_data="menu_settings"),
@@ -71,6 +81,23 @@ def build_template_detail_keyboard(template_id: int, page: int, is_admin_user: b
 
     if is_admin_user:
         buttons.append([InlineKeyboardButton(text="[Delete Template]", callback_data=f"admin_del_tpl:{template_id}:{page}")])
+
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def build_random_keyboard(template_id: int, is_admin_user: bool = False) -> InlineKeyboardMarkup:
+    """Action buttons for a delivered random template, including a re-roll button."""
+    buttons = [
+        [
+            InlineKeyboardButton(text="[Create Meme]", callback_data=f"btn_create:{template_id}"),
+            InlineKeyboardButton(text="[Download Raw]", callback_data=f"btn_raw:{template_id}"),
+        ],
+        [
+            InlineKeyboardButton(text="[Another Random]", callback_data="btn_random_again"),
+        ],
+    ]
+
+    if is_admin_user:
+        buttons.append([InlineKeyboardButton(text="[Delete Template]", callback_data=f"admin_del_tpl:{template_id}:1")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -143,6 +170,10 @@ async def handle_catalog_grid(event: types.Message | types.CallbackQuery, state:
 async def handle_random_template_cmd(message: types.Message, state: FSMContext):
     """Fetch and present a random meme template, clearing any active state."""
     await state.clear()
+    await _deliver_random_template(message.bot, message.chat.id, message.from_user.id)
+
+async def _deliver_random_template(bot, chat_id: int, user_id: int) -> None:
+    """Pick a random template and send it with the random-action keyboard."""
     template = await get_random_template()
     if template:
         title = template.get("title") or template.get("name") or "Random Template"
@@ -150,11 +181,11 @@ async def handle_random_template_cmd(message: types.Message, state: FSMContext):
             f"<b>[RANDOM TEMPLATE: {title}]</b>\n"
             f"Tags: {template.get('tags', 'None')}"
         )
-        is_admin_user = message.from_user.id in config.ADMIN_IDS
-        kb = build_template_detail_keyboard(template["id"], page=1, is_admin_user=is_admin_user)
+        is_admin_user = user_id in config.ADMIN_IDS
+        kb = build_random_keyboard(template["id"], is_admin_user=is_admin_user)
         try:
-            await message.bot.send_photo(
-                chat_id=message.chat.id,
+            await bot.send_photo(
+                chat_id=chat_id,
                 photo=template["file_id"],
                 caption=caption,
                 reply_markup=kb,
@@ -162,10 +193,19 @@ async def handle_random_template_cmd(message: types.Message, state: FSMContext):
             )
             return
         except Exception:
-            await message.answer(caption, reply_markup=kb, parse_mode="HTML")
+            await bot.send_message(chat_id=chat_id, text=caption, reply_markup=kb, parse_mode="HTML")
             return
 
-    await message.answer("[Info: No templates currently available. Upload one using /add_template]")
+    await bot.send_message(
+        chat_id=chat_id,
+        text="[Info: No templates currently available. Upload one using /add_template]",
+    )
+
+@router.callback_query(F.data == "btn_random_again")
+async def handle_random_again(callback: types.CallbackQuery):
+    """Deliver a fresh random template as a new message."""
+    await callback.answer()
+    await _deliver_random_template(callback.message.bot, callback.message.chat.id, callback.from_user.id)
 
 @router.callback_query(F.data.startswith("view_tpl:"))
 async def handle_view_template(callback: types.CallbackQuery):
@@ -200,7 +240,10 @@ async def handle_view_template(callback: types.CallbackQuery):
         f"Tags: {tags}"
     )
 
-    kb = build_template_detail_keyboard(template["id"], page, is_admin_user=is_admin_user)
+    kb = build_template_detail_keyboard(
+        template["id"], page, is_admin_user=is_admin_user,
+        is_fav=await is_favorite(callback.from_user.id, template["id"]),
+    )
 
     try:
         await callback.message.answer_photo(
@@ -219,6 +262,10 @@ async def handle_admin_delete_template(callback: types.CallbackQuery):
         return
 
     parts = callback.data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        await callback.answer("[Error: Invalid template reference.]", show_alert=True)
+        return
+
     template_id = int(parts[1])
     page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 1
 
@@ -226,5 +273,107 @@ async def handle_admin_delete_template(callback: types.CallbackQuery):
     await callback.answer("[Template deleted successfully.]")
     try:
         await callback.message.delete()
+    except Exception:
+        pass
+
+# ------------------------------------------------------------------------------
+# Favorites
+# ------------------------------------------------------------------------------
+
+FAV_PAGE_SIZE = 8
+
+def build_favorites_keyboard(favorites: list, page: int, total_pages: int) -> InlineKeyboardMarkup:
+    """2-column grid of favorited templates with pagination; tap opens the detail view."""
+    builder = InlineKeyboardBuilder()
+
+    for t in favorites:
+        title = t.get("title") or t.get("name") or "Template"
+        display_label = title[:16] + ".." if len(title) > 18 else title
+        builder.button(text=f"[{display_label}]", callback_data=f"view_tpl:{t['id']}:1")
+
+    builder.adjust(2)
+
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton(text="[<< Prev]", callback_data=f"fav_page:{page - 1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton(text="[Next >>]", callback_data=f"fav_page:{page + 1}"))
+    if nav_buttons:
+        builder.row(*nav_buttons)
+
+    builder.row(InlineKeyboardButton(text="[Close]", callback_data="close_catalog"))
+
+    return builder.as_markup()
+
+async def _render_favorites_page(user_id: int, page: int) -> tuple:
+    """Build (text, keyboard) for one page of the user's favorites list."""
+    favs = await get_favorites(user_id)
+    total_pages = max(1, math.ceil(len(favs) / FAV_PAGE_SIZE)) if favs else 1
+    page = min(max(1, page), total_pages)
+
+    if not favs:
+        text = "[No favorites yet. Tap [Add to Favorites] on any template.]"
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="[Close]", callback_data="close_catalog")]]
+        )
+        return text, kb
+
+    chunk = favs[(page - 1) * FAV_PAGE_SIZE : page * FAV_PAGE_SIZE]
+    text = f"[My Favorites - Page {page}/{total_pages} (Total: {len(favs)})]"
+    return text, build_favorites_keyboard(chunk, page, total_pages)
+
+@router.callback_query(F.data.startswith("fav_toggle:"))
+async def handle_fav_toggle(callback: types.CallbackQuery):
+    """Toggle a template in/out of the user's favorites and refresh the button."""
+    parts = callback.data.split(":")
+    if len(parts) < 3 or not parts[1].isdigit() or not parts[2].isdigit():
+        await callback.answer("[Error: Invalid favorite reference.]", show_alert=True)
+        return
+
+    template_id = int(parts[1])
+    page = int(parts[2])
+    user_id = callback.from_user.id
+
+    template = await get_template_by_id(template_id)
+    if not template:
+        await callback.answer("[Error: Template not found.]", show_alert=True)
+        return
+
+    if await is_favorite(user_id, template_id):
+        await remove_favorite(user_id, template_id)
+        new_fav = False
+        await callback.answer("[Removed from favorites.]")
+    else:
+        await add_favorite(user_id, template_id)
+        new_fav = True
+        await callback.answer("[Added to favorites.]")
+
+    kb = build_template_detail_keyboard(
+        template_id, page,
+        is_admin_user=user_id in config.ADMIN_IDS,
+        is_fav=new_fav,
+    )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=kb)
+    except Exception:
+        pass
+
+@router.message(Command("favorites"), StateFilter("*"))
+async def handle_favorites_command(message: types.Message, state: Optional[FSMContext] = None):
+    """List the user's favorited templates across any state."""
+    if state:
+        await state.clear()
+    text, kb = await _render_favorites_page(message.from_user.id, 1)
+    await message.answer(text, reply_markup=kb)
+
+@router.callback_query(F.data.startswith("fav_page:"))
+async def handle_fav_page(callback: types.CallbackQuery):
+    """Paginate the favorites list in place."""
+    parts = callback.data.split(":", 1)
+    page = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 1
+    await callback.answer()
+    text, kb = await _render_favorites_page(callback.from_user.id, page)
+    try:
+        await callback.message.edit_text(text, reply_markup=kb)
     except Exception:
         pass
