@@ -105,7 +105,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         self.assertIn(random_t["id"], [tid, vid_id])
 
         # 6. User Preferences & Advanced Watermark CRUD
-        await update_user_font(user_id=999, font_key="Kalpurush")
+        await update_user_font(user_id=999, font_key="NotoSansBengali")
         await update_user_watermark_settings(
             user_id=999,
             scale=1.5,
@@ -116,7 +116,7 @@ class TestDatabase(unittest.IsolatedAsyncioTestCase):
         )
         user = await get_user(999)
         self.assertIsNotNone(user)
-        self.assertEqual(user["preferred_font"], "Kalpurush")
+        self.assertEqual(user["preferred_font"], "NotoSansBengali")
         self.assertEqual(user["watermark_scale"], 1.5)
         self.assertEqual(user["watermark_opacity"], 0.75)
         self.assertEqual(user["watermark_position"], "top_right")

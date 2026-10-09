@@ -155,7 +155,7 @@ class TestEditorAndSubmission(unittest.TestCase):
 
         font_kb = get_font_matrix_keyboard()
         font_cbs = [btn.callback_data for row in font_kb.inline_keyboard for btn in row]
-        self.assertIn("edit:font:kalpurush", font_cbs)
+        self.assertIn("edit:font:anek_extrabold", font_cbs)
         self.assertIn("edit:font:anek_bangla", font_cbs)
         self.assertIn("edit:font:impact", font_cbs)
 

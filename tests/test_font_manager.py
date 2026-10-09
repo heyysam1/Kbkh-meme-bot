@@ -6,26 +6,25 @@ from services.font_manager import FontManager, font_manager, CURATED_FONTS
 
 class TestFontManager(unittest.TestCase):
     def test_exactly_ten_fonts_exist_in_directory(self):
-        """Assert that assets/fonts directory strictly contains exactly the 10 allowed fonts."""
+        """Assert that assets/fonts directory strictly contains exactly the 9 allowed fonts."""
         fonts = [
             f for f in config.FONTS_DIR.iterdir()
             if f.is_file() and f.suffix.lower() in (".ttf", ".otf")
         ]
         self.assertEqual(
             len(fonts),
-            10,
-            f"Expected exactly 10 fonts in assets/fonts, found {len(fonts)}: {[f.name for f in fonts]}",
+            9,
+            f"Expected exactly 9 fonts in assets/fonts, found {len(fonts)}: {[f.name for f in fonts]}",
         )
 
     def test_exactly_ten_curated_fonts_registered(self):
-        """Verify FontManager registers strictly the 10 approved fonts."""
+        """Verify FontManager registers strictly the 9 approved fonts."""
         fm = FontManager()
         font_list = fm.get_font_list()
-        self.assertEqual(len(font_list), 10, f"Expected exactly 10 registered fonts, got {len(font_list)}")
+        self.assertEqual(len(font_list), 9, f"Expected exactly 9 registered fonts, got {len(font_list)}")
 
         registered_displays = [name for _, name in font_list]
         expected_displays = [
-            "Kalpurush",
             "Anek Bangla",
             "Anek ExtraBold",
             "Li Siliguri",
@@ -61,9 +60,8 @@ class TestFontManager(unittest.TestCase):
         self.assertEqual(fallback_english.name, config.DEFAULT_ENGLISH_FONT)
 
     def test_display_name_sanitization(self):
-        """Verify clean emoji-free display names for the 10 approved fonts."""
+        """Verify clean emoji-free display names for the 9 approved fonts."""
         fm = FontManager()
-        self.assertEqual(fm.sanitize_display_name("Kalpurush.ttf"), "Kalpurush")
         self.assertEqual(fm.sanitize_display_name("AnekBangla.ttf"), "Anek Bangla")
         self.assertEqual(fm.sanitize_display_name("AnekBangla-ExtraBold.ttf"), "Anek ExtraBold")
         self.assertEqual(fm.sanitize_display_name("LiSiliguri.ttf"), "Li Siliguri")
