@@ -85,7 +85,8 @@ class TestExternalUseTemplate(unittest.IsolatedAsyncioTestCase):
                                                      "watermark_position": "bottom_right",
                                                      "watermark_scale": 1.0,
                                                      "watermark_opacity": 0.8})), \
-             patch.object(search_flow, "log_template_use", new=AsyncMock(), create=True):
+             patch.object(search_flow, "log_template_use", new=AsyncMock(), create=True), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_use_template(cb, state)
         state.set_state.assert_awaited_once_with(EditorSG.waiting_for_text)
         data = state.update_data.await_args.kwargs
@@ -96,7 +97,8 @@ class TestExternalUseTemplate(unittest.IsolatedAsyncioTestCase):
     async def test_stale_registry_shows_alert(self):
         cb = _make_callback()
         state = MagicMock()
-        with patch.object(search_flow, "get_external_template", return_value=None):
+        with patch.object(search_flow, "get_external_template", return_value=None), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_use_template(cb, state)
         cb.answer.assert_awaited_once()
         self.assertTrue(cb.answer.await_args.kwargs.get("show_alert"))
@@ -106,7 +108,8 @@ class TestExternalUseTemplate(unittest.IsolatedAsyncioTestCase):
         state = MagicMock()
         state.set_state = AsyncMock()
         with patch.object(search_flow, "get_external_template", return_value=_ext_item()), \
-             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"):
+             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_use_template(cb, state)
         # status message edited with error instead of silent death
         cb.message.answer.return_value.edit_text.assert_awaited_once()
@@ -119,7 +122,8 @@ class TestExternalUseTemplate(unittest.IsolatedAsyncioTestCase):
         with patch.object(search_flow, "get_external_template", return_value=_ext_item()), \
              patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"), \
              patch.object(search_flow, "add_template",
-                          new=AsyncMock(side_effect=Exception("db down"))):
+                          new=AsyncMock(side_effect=Exception("db down"))), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_use_template(cb, state)
         # error message sent after the photo instead of silence
         texts = [c.args[0] for c in cb.message.answer.await_args_list if c.args]
@@ -144,7 +148,8 @@ class TestExternalDownload(unittest.IsolatedAsyncioTestCase):
         cb.message.answer_photo = AsyncMock()
         cb.message.answer_document = AsyncMock()
         with patch.object(search_flow, "get_external_template", return_value=_ext_item()), \
-             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"):
+             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_download_template(cb)
         cb.message.answer_photo.assert_awaited_once()
         cb.message.answer_document.assert_awaited_once()
@@ -153,7 +158,8 @@ class TestExternalDownload(unittest.IsolatedAsyncioTestCase):
         cb = _make_callback(data="btn_ext_dl:ext_if_123")
         cb.message.answer_photo = AsyncMock(side_effect=Exception("telegram down"))
         with patch.object(search_flow, "get_external_template", return_value=_ext_item()), \
-             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"):
+             patch.object(search_flow, "fetch_external_image_bytes", return_value=b"BYTES"), \
+             patch.object(search_flow, "get_user_lang", new=AsyncMock(return_value="bn")):
             await search_flow.handle_external_download_template(cb)
         cb.message.answer.assert_awaited_once()
 
