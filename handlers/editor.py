@@ -43,7 +43,7 @@ class EditorSG(StatesGroup):
 
 
 # Quick toggle and testing cycles
-LAYOUT_CYCLES = ["overlay", "top_banner", "bottom_banner", "breaking_news"]
+LAYOUT_CYCLES = ["overlay"]
 COLOR_CYCLES = ["white", "yellow", "cyan", "red", "black"]
 STROKE_CYCLES = [0, 2, 5, 8]
 CASE_CYCLES = ["raw", "upper", "title"]
@@ -380,11 +380,6 @@ def get_layout_matrix_keyboard(lang: str = "bn") -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(text=t("editor.layout_overlay", lang), callback_data="edit:layout:overlay"),
-                InlineKeyboardButton(text=t("editor.layout_top_banner", lang), callback_data="edit:layout:top_banner"),
-            ],
-            [
-                InlineKeyboardButton(text=t("editor.layout_bottom_banner", lang), callback_data="edit:layout:bottom_banner"),
-                InlineKeyboardButton(text=t("editor.layout_breaking", lang), callback_data="edit:layout:breaking"),
             ],
             [
                 InlineKeyboardButton(text=t("editor.back_editor", lang), callback_data="edit:back"),
@@ -626,7 +621,15 @@ async def _render_current_draft(bot, data: dict, user_id: int) -> Optional[io.By
 async def _update_live_preview(callback: types.CallbackQuery, state: FSMContext, data: dict,
                               lang: str = "bn", custom_kb: Optional[InlineKeyboardMarkup] = None):
     """Re-render in-memory and update Telegram preview image without deleting the message."""
-    rendered_buf = await _render_current_draft(callback.bot, data, callback.from_user.id)
+    try:
+        rendered_buf = await _render_current_draft(callback.bot, data, callback.from_user.id)
+    except Exception as e:
+        logger.exception("render failed: %s", e)
+        try:
+            await callback.answer(t("editor.err_preview", lang) + f" ({type(e).__name__})", show_alert=True)
+        except Exception:
+            pass
+        return
     if not rendered_buf:
         try:
             await callback.answer(t("editor.err_preview", lang), show_alert=True)

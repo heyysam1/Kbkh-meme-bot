@@ -42,9 +42,9 @@ class TestEditorAndSubmission(unittest.TestCase):
     def test_editor_cycles_completeness(self):
         """Verify layout, color, filter, stroke, case, and watermark cycles."""
         self.assertIn("overlay", LAYOUT_CYCLES)
-        self.assertIn("top_banner", LAYOUT_CYCLES)
-        self.assertIn("bottom_banner", LAYOUT_CYCLES)
-        self.assertIn("breaking_news", LAYOUT_CYCLES)
+        self.assertNotIn("top_banner", LAYOUT_CYCLES)
+        self.assertNotIn("bottom_banner", LAYOUT_CYCLES)
+        self.assertNotIn("breaking_news", LAYOUT_CYCLES)
 
         self.assertIn("deepfry", FILTER_CYCLES)
         self.assertIn("grayscale", FILTER_CYCLES)
@@ -149,9 +149,9 @@ class TestEditorAndSubmission(unittest.TestCase):
         layout_kb = get_layout_matrix_keyboard()
         layout_cbs = [btn.callback_data for row in layout_kb.inline_keyboard for btn in row]
         self.assertIn("edit:layout:overlay", layout_cbs)
-        self.assertIn("edit:layout:top_banner", layout_cbs)
-        self.assertIn("edit:layout:bottom_banner", layout_cbs)
-        self.assertIn("edit:layout:breaking", layout_cbs)
+        self.assertNotIn("edit:layout:top_banner", layout_cbs)
+        self.assertNotIn("edit:layout:bottom_banner", layout_cbs)
+        self.assertNotIn("edit:layout:breaking", layout_cbs)
 
         font_kb = get_font_matrix_keyboard()
         font_cbs = [btn.callback_data for row in font_kb.inline_keyboard for btn in row]

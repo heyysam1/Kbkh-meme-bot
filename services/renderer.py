@@ -86,6 +86,25 @@ def _apply_casing(text: str, case_mode: str) -> str:
         return text.title()
     return text
 
+def _draw_stroked_text(draw: ImageDraw.ImageDraw, xy, text, font, fill,
+                      stroke_width: int = 0, stroke_fill=None, **kwargs):
+    """Draw multiline text with manual outline stroke.
+
+    PIL's built-in stroke_width breaks RAQM complex text shaping (Bengali
+    renders as broken glyphs), so the outline is drawn manually with offset
+    copies. This preserves correct Bengali shaping.
+    """
+    if stroke_width and stroke_width > 0 and stroke_fill is not None:
+        x, y = xy
+        sw = int(stroke_width)
+        for dx in range(-sw, sw + 1):
+            for dy in range(-sw, sw + 1):
+                if dx * dx + dy * dy <= sw * sw and (dx, dy) != (0, 0):
+                    draw.multiline_text((x + dx, y + dy), text, font=font,
+                                        fill=stroke_fill, **kwargs)
+    draw.multiline_text(xy, text, font=font, fill=fill, **kwargs)
+
+
 def _wrap_text_to_width(text: str, font: ImageFont.FreeTypeFont, max_width: int, draw: ImageDraw.ImageDraw) -> str:
     """
     Wrap text so each line fits within max_width using multiline_textbbox.
@@ -335,13 +354,14 @@ def _sync_render_worker(
                     spacing=int(top_font.size * 0.2),
                 )
 
-            draw.multiline_text(
+            _draw_stroked_text(
+                draw,
                 (top_x, top_y),
                 wrapped_top,
                 font=top_font,
                 fill=parsed_text_color,
                 stroke_width=stroke_width,
-                stroke_fill=stroke_fill if stroke_width > 0 else None,
+                stroke_fill=stroke_fill,
                 align=align_key,
                 spacing=int(top_font.size * 0.2),
             )
@@ -366,13 +386,14 @@ def _sync_render_worker(
                     spacing=int(bot_font.size * 0.2),
                 )
 
-            draw.multiline_text(
+            _draw_stroked_text(
+                draw,
                 (bot_x, bot_y),
                 wrapped_bot,
                 font=bot_font,
                 fill=parsed_text_color,
                 stroke_width=stroke_width,
-                stroke_fill=stroke_fill if stroke_width > 0 else None,
+                stroke_fill=stroke_fill,
                 align=align_key,
                 spacing=int(bot_font.size * 0.2),
             )
@@ -399,13 +420,14 @@ def _sync_render_worker(
         if text_bg:
             canvas = _with_text_bg(canvas, (text_x, text_y, text_x + tw, text_y + th))
             draw = ImageDraw.Draw(canvas)
-        draw.multiline_text(
+        _draw_stroked_text(
+            draw,
             (text_x, text_y),
             wrapped_text,
             font=font,
             fill=parsed_text_color,
             stroke_width=stroke_width,
-            stroke_fill=stroke_fill if stroke_width > 0 else None,
+            stroke_fill=stroke_fill,
             align=align_key,
             spacing=int(font.size * 0.2),
         )
@@ -445,13 +467,14 @@ def _sync_render_worker(
         if text_bg:
             canvas = _with_text_bg(canvas, (news_x, news_y, news_x + nw, news_y + nh))
             draw = ImageDraw.Draw(canvas)
-        draw.multiline_text(
+        _draw_stroked_text(
+            draw,
             (news_x, news_y),
             wrapped_news,
             font=news_font,
             fill=parsed_text_color if custom_color else (255, 230, 0),
             stroke_width=stroke_width,
-            stroke_fill=stroke_fill if stroke_width > 0 else None,
+            stroke_fill=stroke_fill,
             align=align_key,
         )
 
@@ -477,13 +500,14 @@ def _sync_render_worker(
         if text_bg:
             canvas = _with_text_bg(canvas, (text_x, text_y, text_x + tw, text_y + th))
             draw = ImageDraw.Draw(canvas)
-        draw.multiline_text(
+        _draw_stroked_text(
+            draw,
             (text_x, text_y),
             wrapped_text,
             font=font,
             fill=text_c,
             stroke_width=stroke_width,
-            stroke_fill=stroke_fill if stroke_width > 0 else None,
+            stroke_fill=stroke_fill,
             align=align_key,
             spacing=int(font.size * 0.2),
         )
@@ -581,8 +605,10 @@ def _sync_render_worker(
                 else:  # bottom_right
                     pos_xy = (cw - wt_w - m, ch - wt_h - m)
 
-                # Draw subtle watermark text with outline
-                draw.text(pos_xy, watermark_text, font=wm_font, fill=(255, 255, 255, int(255 * watermark_opacity)), stroke_width=2, stroke_fill=(0, 0, 0))
+                # Draw subtle watermark text with outline (manual stroke preserves Bengali shaping)
+                _draw_stroked_text(draw, pos_xy, watermark_text, font=wm_font,
+                                   fill=(255, 255, 255, int(255 * watermark_opacity)),
+                                   stroke_width=2, stroke_fill=(0, 0, 0))
             except Exception:
                 logger.warning("Watermark text overlay failed; continuing without watermark.", exc_info=True)
                 pass
