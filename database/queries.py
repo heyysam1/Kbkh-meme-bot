@@ -33,6 +33,7 @@ async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str
     return await get_user(user_id) or {
         "user_id": user_id,
         "preferred_font": preferred_font,
+        "lang": "bn",
         "watermark_file_id": None,
         "watermark_text": None,
         "watermark_enabled": 0,
@@ -48,6 +49,25 @@ async def update_user_font(user_id: int, font_key: str) -> None:
         await conn.execute(
             "UPDATE users SET preferred_font = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?;",
             (font_key, user_id),
+        )
+        await conn.commit()
+
+async def get_user_lang(user_id: int) -> str:
+    """Return the user's UI language code ('bn' or 'en'); defaults to 'bn'."""
+    user = await upsert_user(user_id)
+    lang = (user.get("lang") or "bn").strip().lower()
+    return lang if lang in ("bn", "en") else "bn"
+
+async def set_user_lang(user_id: int, lang: str) -> None:
+    """Persist the user's UI language ('bn' or 'en'); anything else falls back to 'bn'."""
+    await upsert_user(user_id)
+    clean = (lang or "bn").strip().lower()
+    if clean not in ("bn", "en"):
+        clean = "bn"
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE users SET lang = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?;",
+            (clean, user_id),
         )
         await conn.commit()
 
@@ -516,6 +536,15 @@ async def save_draft(user_id: int, data: dict) -> None:
         "watermark_opacity": _d("watermark_opacity", 0.8),
         "banner_id": _d("banner_id", None),
         "is_clean": _b("is_clean", 0),
+        "text_offset_y": _d("text_offset_y", 0),
+        "font_scale": _d("font_scale", 1.0),
+        "text_align": _d("text_align", "center"),
+        "stroke_color": _d("stroke_color", None),
+        "text_bg": _b("text_bg", 0),
+        "flip": _b("flip", 0),
+        "crop": _d("crop", "off"),
+        "brightness": _d("brightness", 1.0),
+        "contrast": _d("contrast", 1.0),
     }
     cols = ["user_id"] + list(vals.keys())
     placeholders = ", ".join(["?"] * len(cols))
@@ -545,3 +574,31 @@ async def delete_draft(user_id: int) -> bool:
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+
+# ------------------------------------------------------------------------------
+# Recent templates (per-user recently used template history)
+# ------------------------------------------------------------------------------
+
+async def log_template_use(user_id: int, template_id: int) -> None:
+    """Record that a user used a template (upserts used_at on repeat use)."""
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT INTO recent_templates (user_id, template_id, used_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(user_id, template_id) DO UPDATE SET used_at = CURRENT_TIMESTAMP;",
+            (user_id, template_id),
+        )
+        await conn.commit()
+
+
+async def get_recent_templates(user_id: int, limit: int = 8) -> List[int]:
+    """Return the user's most recently used template ids, newest first."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT template_id FROM recent_templates "
+            "WHERE user_id = ? ORDER BY used_at DESC LIMIT ?;",
+            (user_id, limit),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [row["template_id"] for row in rows]

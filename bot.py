@@ -37,8 +37,11 @@ async def set_bot_commands(bot: Bot) -> None:
         BotCommand(command="template", description="Browse meme template catalog grid"),
         BotCommand(command="add_template", description="Upload a new meme template to catalog"),
         BotCommand(command="search", description="Search templates and public memes"),
+        BotCommand(command="random", description="Get a random meme template"),
         BotCommand(command="favorites", description="View your favorited templates"),
         BotCommand(command="drafts", description="Resume or delete your saved meme draft"),
+        BotCommand(command="scrape", description="Fetch new templates from sources (admin)"),
+        BotCommand(command="banners", description="List promotional banners (admin)"),
         BotCommand(command="admin", description="Access admin configuration panel"),
         BotCommand(command="help", description="View usage guide and shortcuts"),
     ]

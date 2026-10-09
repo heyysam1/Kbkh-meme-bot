@@ -77,7 +77,7 @@ if not BLACK_LOGO_PATH.exists() and (LOGOS_DIR / "kbkh black logo.png").exists()
     BLACK_LOGO_PATH = LOGOS_DIR / "kbkh black logo.png"
 
 # Default primary font identifiers
-DEFAULT_BENGALI_FONT: str = "Kalpurush.ttf"
+DEFAULT_BENGALI_FONT: str = "NotoSansBengali.ttf"
 DEFAULT_ENGLISH_FONT: str = "Impact.ttf"
 
 # Luminance threshold for auto-contrast logo selection (0 to 255 scale)

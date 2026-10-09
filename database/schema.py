@@ -10,6 +10,7 @@ CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     preferred_font TEXT NOT NULL DEFAULT 'default',
+    lang TEXT NOT NULL DEFAULT 'bn',
     watermark_file_id TEXT,
     watermark_text TEXT,
     watermark_enabled INTEGER NOT NULL DEFAULT 0,
@@ -96,7 +97,24 @@ CREATE TABLE IF NOT EXISTS drafts (
     watermark_opacity REAL DEFAULT 0.8,
     banner_id INTEGER,
     is_clean INTEGER DEFAULT 0,
+    text_offset_y INTEGER DEFAULT 0,
+    font_scale REAL DEFAULT 1.0,
+    text_align TEXT DEFAULT 'center',
+    stroke_color TEXT,
+    text_bg INTEGER DEFAULT 0,
+    flip INTEGER DEFAULT 0,
+    crop TEXT DEFAULT 'off',
+    brightness REAL DEFAULT 1.0,
+    contrast REAL DEFAULT 1.0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Recent templates table (per-user recently used template history)
+CREATE TABLE IF NOT EXISTS recent_templates (
+    user_id INTEGER NOT NULL,
+    template_id INTEGER NOT NULL,
+    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, template_id)
 );
 """
 
@@ -139,12 +157,33 @@ async def auto_migrate(conn: aiosqlite.Connection) -> None:
         "watermark_text": "TEXT",
         "watermark_scale": "REAL NOT NULL DEFAULT 1.0",
         "watermark_opacity": "REAL NOT NULL DEFAULT 0.8",
+        "lang": "TEXT NOT NULL DEFAULT 'bn'",
     }
     for col_name, col_def in user_required.items():
         if col_name not in user_cols:
             await conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_def};")
 
-    # 5. Synchronize title <-> name columns for backwards compatibility
+    # 5. Inspect drafts table schema for editor fine-tune options
+    async with conn.execute("PRAGMA table_info(drafts);") as cursor:
+        draft_rows = await cursor.fetchall()
+        draft_cols = {row["name"] if isinstance(row, dict) or hasattr(row, "keys") else row[1] for row in draft_rows}
+
+    draft_required = {
+        "text_offset_y": "INTEGER DEFAULT 0",
+        "font_scale": "REAL DEFAULT 1.0",
+        "text_align": "TEXT DEFAULT 'center'",
+        "stroke_color": "TEXT",
+        "text_bg": "INTEGER DEFAULT 0",
+        "flip": "INTEGER DEFAULT 0",
+        "crop": "TEXT DEFAULT 'off'",
+        "brightness": "REAL DEFAULT 1.0",
+        "contrast": "REAL DEFAULT 1.0",
+    }
+    for col_name, col_def in draft_required.items():
+        if col_name not in draft_cols:
+            await conn.execute(f"ALTER TABLE drafts ADD COLUMN {col_name} {col_def};")
+
+    # 6. Synchronize title <-> name columns for backwards compatibility
     await conn.execute(
         "UPDATE templates SET title = name WHERE (title IS NULL OR title = '') AND name IS NOT NULL;"
     )
@@ -152,7 +191,7 @@ async def auto_migrate(conn: aiosqlite.Connection) -> None:
         "UPDATE templates SET name = title WHERE (name IS NULL OR name = '') AND title IS NOT NULL;"
     )
 
-    # 6. Create performant indexes
+    # 7. Create performant indexes
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_templates_search ON templates(name, tags);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_templates_title ON templates(title);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_templates_media_type ON templates(media_type);")
@@ -162,3 +201,4 @@ async def auto_migrate(conn: aiosqlite.Connection) -> None:
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_aliases_term ON aliases(alias_term);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_active ON sources(is_active);")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_recent_user ON recent_templates(user_id);")

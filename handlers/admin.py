@@ -3,6 +3,7 @@ from typing import Optional
 from aiogram import Router, types, F
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
@@ -18,9 +19,14 @@ from database.queries import (
     add_source,
     get_all_sources,
     remove_source,
+    get_user_lang,
 )
+from services.i18n import t
 
 router = Router(name="admin_router")
+
+class BannerSG(StatesGroup):
+    waiting_for_photo = State()
 
 def is_admin(user_id: int) -> bool:
     """Check if user has administrative rights."""
@@ -37,28 +43,12 @@ async def handle_admin_dashboard(message: types.Message, state: Optional[FSMCont
     """Display admin controls and operational overview, clearing any active state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
-        await message.answer("[Access Denied: Admin privileges required.]")
+        await message.answer(t("admin.access_denied", lang))
         return
 
-    admin_text = (
-        "<b>[ADMIN CONTROL PANEL]</b>\n\n"
-        "<b>Template Ingestion:</b>\n"
-        "• Send or forward media (photo/video/gif) directly to this chat.\n"
-        "• Use /add_template to launch the submission workflow.\n\n"
-        "<b>External Sources:</b>\n"
-        "• /add_source &lt;url&gt; [name] - Register new meme repository/feed\n"
-        "• /sources - View and manage configured sources\n"
-        "• /remove_source &lt;id&gt; - Remove external source by ID\n\n"
-        "<b>Banners & Aliases:</b>\n"
-        "• /addbanner &lt;title&gt; - Register promotional banner (photo attached/reply)\n"
-        "• /banners - List all banners with delete controls\n"
-        "• /addalias &lt;term&gt; = &lt;title&gt; - Map alias to official template\n"
-        "• /aliases - List registered alias mappings\n\n"
-        "<b>System Metrics:</b>\n"
-        "• /stats - Display real-time database counts and usage metrics"
-    )
-    await message.answer(admin_text, parse_mode="HTML")
+    await message.answer(t("admin.panel", lang), parse_mode="HTML")
 
 # ------------------------------------------------------------------------------
 # Admin Retroactive Bulk Ingestion (Forwarded Channel Posts & Direct Uploads)
@@ -72,6 +62,7 @@ async def handle_admin_retroactive_ingest(message: types.Message):
     """
     if not is_admin(message.from_user.id):
         return
+    lang = await get_user_lang(message.from_user.id)
 
     from handlers.channel import extract_template_metadata
     meta = extract_template_metadata(message)
@@ -106,14 +97,18 @@ async def handle_admin_retroactive_ingest(message: types.Message):
         added_by=message.from_user.id,
     )
 
-    channel_info = f" (Channel: <i>{source_channel_title}</i>)" if source_channel_title else ""
+    channel_info = (
+        t("admin.from_channel", lang).format(name=source_channel_title)
+        if source_channel_title else ""
+    )
     await message.reply(
-        f"[Success: Template ingested]\n\n"
-        f"• ID: <code>#{template_id}</code>\n"
-        f"• Title: {title}\n"
-        f"• Media Type: <code>{media_type}</code>\n"
-        f"• Tags: <code>{tags_str or 'None'}</code>{channel_info}",
-        parse_mode="HTML",
+        t("admin.template_ingested", lang).format(
+            id=template_id,
+            title=title,
+            media_type=media_type,
+            tags=tags_str or "-",
+            channel=channel_info,
+        )
     )
 
 # ------------------------------------------------------------------------------
@@ -125,17 +120,14 @@ async def handle_add_source_command(message: types.Message, state: Optional[FSMC
     """Register an external meme feed or API source across any state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
-        await message.answer("[Access Denied: Admin privileges required.]")
+        await message.answer(t("admin.access_denied", lang))
         return
 
-    parts = message.text.split(maxsplit=2)
+    parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 2:
-        await message.answer(
-            "[Error: Missing arguments]\n"
-            "Usage: /add_source <url> [name]\n"
-            "Example: /add_source https://api.imgflip.com/get_memes Imgflip API"
-        )
+        await message.answer(t("admin.add_source_usage", lang))
         return
 
     url = parts[1].strip()
@@ -143,10 +135,7 @@ async def handle_add_source_command(message: types.Message, state: Optional[FSMC
 
     source_id = await add_source(url=url, name=name)
     await message.answer(
-        f"[Success: Source registered]\n\n"
-        f"• ID: <code>#{source_id}</code>\n"
-        f"• Name: {name}\n"
-        f"• URL: <code>{url}</code>",
+        t("admin.source_added", lang).format(id=source_id, name=name, url=url),
         parse_mode="HTML",
     )
 
@@ -157,21 +146,22 @@ async def handle_list_sources_command(message: types.Message, state: Optional[FS
         await state.clear()
     if not is_admin(message.from_user.id):
         return
+    lang = await get_user_lang(message.from_user.id)
 
     sources = await get_all_sources()
     if not sources:
-        await message.answer(
-            "[Info: No external sources configured. Use /add_source <url> [name] to add one.]"
-        )
+        await message.answer(t("admin.no_sources", lang))
         return
 
-    lines = ["<b>[CONFIGURED EXTERNAL SOURCES]</b>\n"]
+    lines = [t("admin.sources_title", lang) + "\n"]
     kb_rows = []
     for s in sources:
-        lines.append(f"• ID <code>{s['id']}</code> | <b>{s['name']}</b>\n  <code>{s['url']}</code>")
+        lines.append(
+            t("admin.source_row", lang).format(id=s["id"], name=s["name"], url=s["url"])
+        )
         kb_rows.append([
             InlineKeyboardButton(
-                text=f"[Remove #{s['id']}]",
+                text=t("admin.remove_btn", lang),
                 callback_data=f"cb_del_source:{s['id']}",
             )
         ])
@@ -184,47 +174,50 @@ async def handle_remove_source_command(message: types.Message, state: Optional[F
     """Remove an external meme feed source across any state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
+        await message.answer(t("admin.access_denied", lang))
         return
 
-    parts = message.text.split(maxsplit=1)
+    parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
-        await message.answer("[Error: Provide a valid source ID. Example: /remove_source 1]")
+        await message.answer(t("admin.remove_source_usage", lang))
         return
 
     source_id = int(parts[1].strip())
     await remove_source(source_id)
-    await message.answer(f"[Success: Source #{source_id} removed.]")
+    await message.answer(t("admin.source_removed", lang).format(id=source_id))
 
 @router.callback_query(F.data.startswith("cb_del_source:"))
 async def handle_delete_source_callback(callback: types.CallbackQuery):
     """Handle inline button deletion of an external source."""
+    lang = await get_user_lang(callback.from_user.id)
     if not is_admin(callback.from_user.id):
-        await callback.answer("[Access Denied]", show_alert=True)
+        await callback.answer(t("admin.access_denied", lang), show_alert=True)
         return
 
     source_id_str = callback.data.split(":", 1)[1]
     if not source_id_str.isdigit():
-        await callback.answer("[Error: Invalid source ID.]", show_alert=True)
+        await callback.answer(t("admin.invalid_source_id", lang), show_alert=True)
         return
 
     await remove_source(int(source_id_str))
-    await callback.answer("[Source removed]")
+    await callback.answer(t("admin.source_removed_toast", lang))
     # Refresh the list
     sources = await get_all_sources()
     if not sources:
-        await callback.message.edit_text(
-            "[Info: No external sources configured. Use /add_source <url> [name] to add one.]"
-        )
+        await callback.message.edit_text(t("admin.no_sources", lang))
         return
 
-    lines = ["<b>[CONFIGURED EXTERNAL SOURCES]</b>\n"]
+    lines = [t("admin.sources_title", lang) + "\n"]
     kb_rows = []
     for s in sources:
-        lines.append(f"• ID <code>{s['id']}</code> | <b>{s['name']}</b>\n  <code>{s['url']}</code>")
+        lines.append(
+            t("admin.source_row", lang).format(id=s["id"], name=s["name"], url=s["url"])
+        )
         kb_rows.append([
             InlineKeyboardButton(
-                text=f"[Remove #{s['id']}]",
+                text=t("admin.remove_btn", lang),
                 callback_data=f"cb_del_source:{s['id']}",
             )
         ])
@@ -243,11 +236,14 @@ async def handle_add_banner_command(message: types.Message, state: Optional[FSMC
     """Add a promotional banner across any state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
-        await message.answer("[Access Denied: Admin privileges required.]")
+        await message.answer(t("admin.access_denied", lang))
         return
 
-    parts = message.text.split(maxsplit=1)
+    # Caption posts carry the command in message.caption, not message.text.
+    raw_text = message.text or message.caption or ""
+    parts = raw_text.split(maxsplit=1)
     banner_name = parts[1].strip() if len(parts) > 1 else "KBKH Promo Banner"
 
     file_id = None
@@ -257,21 +253,41 @@ async def handle_add_banner_command(message: types.Message, state: Optional[FSMC
         file_id = message.reply_to_message.photo[-1].file_id
 
     if not file_id:
-        await message.answer(
-            "[Error: Banner image not found]\n\n"
-            "Usage:\n"
-            "• Attach photo with caption: /addbanner <name>\n"
-            "• Or reply to a photo message with: /addbanner <name>"
-        )
+        # No photo attached: ask for one and wait. The next photo sent
+        # becomes the banner (caption used as its name, if given).
+        await state.set_state(BannerSG.waiting_for_photo)
+        await message.answer(t("admin.banner_upload_prompt", lang))
         return
 
     banner_id = await add_banner(name=banner_name, file_id=file_id, is_default=0)
     await message.answer(
-        f"[Success: Banner registered]\n\n"
-        f"• Banner ID: <code>{banner_id}</code>\n"
-        f"• Name: {banner_name}",
+        t("admin.banner_added", lang).format(id=banner_id, name=banner_name),
         parse_mode="HTML",
     )
+
+@router.message(BannerSG.waiting_for_photo, F.photo)
+async def handle_banner_photo_upload(message: types.Message, state: FSMContext):
+    """Save the photo sent after /addbanner as a new banner."""
+    lang = await get_user_lang(message.from_user.id)
+    if not is_admin(message.from_user.id):
+        await state.clear()
+        await message.answer(t("admin.access_denied", lang))
+        return
+    banner_name = (message.caption or "").strip() or "KBKH Promo Banner"
+    banner_id = await add_banner(
+        name=banner_name, file_id=message.photo[-1].file_id, is_default=0
+    )
+    await state.clear()
+    await message.answer(
+        t("admin.banner_added", lang).format(id=banner_id, name=banner_name),
+        parse_mode="HTML",
+    )
+
+@router.message(BannerSG.waiting_for_photo, Command("cancel"))
+async def handle_banner_upload_cancel(message: types.Message, state: FSMContext):
+    lang = await get_user_lang(message.from_user.id)
+    await state.clear()
+    await message.answer(t("common.cancel", lang))
 
 @router.message(Command("banners"), StateFilter("*"), flags={"state": "*"})
 async def handle_list_banners_admin(message: types.Message, state: Optional[FSMContext] = None):
@@ -280,42 +296,47 @@ async def handle_list_banners_admin(message: types.Message, state: Optional[FSMC
         await state.clear()
     if not is_admin(message.from_user.id):
         return
+    lang = await get_user_lang(message.from_user.id)
 
     banners = await get_all_banners()
     if not banners:
-        await message.answer("[Info: No promotional banners found. Add with /addbanner]")
+        await message.answer(t("admin.no_banners", lang))
         return
 
-    await message.answer("<b>[REGISTERED PROMOTIONAL BANNERS]</b>", parse_mode="HTML")
+    await message.answer(t("admin.banners_title", lang), parse_mode="HTML")
 
     for b in banners:
         del_kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="[Delete]", callback_data=f"cb_del_banner:{b['id']}")]]
+            inline_keyboard=[[InlineKeyboardButton(
+                text=t("common.delete", lang),
+                callback_data=f"cb_del_banner:{b['id']}",
+            )]]
         )
         try:
             await message.bot.send_photo(
                 chat_id=message.chat.id,
                 photo=b["file_id"],
-                caption=f"[Banner] {b['name']} (ID: {b['id']})",
+                caption=t("admin.banner_caption", lang).format(name=b["name"], id=b["id"]),
                 reply_markup=del_kb,
             )
         except Exception:
             await message.answer(
-                f"[Banner] {b['name']} (ID: {b['id']})",
+                t("admin.banner_caption", lang).format(name=b["name"], id=b["id"]),
                 reply_markup=del_kb,
             )
 
 @router.callback_query(F.data.startswith("cb_del_banner:"))
 async def handle_delete_banner(callback: types.CallbackQuery):
     """Delete promotional banner from library."""
+    lang = await get_user_lang(callback.from_user.id)
     if not is_admin(callback.from_user.id):
-        await callback.answer("[Access Denied]", show_alert=True)
+        await callback.answer(t("admin.access_denied", lang), show_alert=True)
         return
 
     banner_id = callback.data.split(":", 1)[1]
     if banner_id.isdigit():
         await delete_banner(int(banner_id))
-        await callback.answer("[Banner deleted]")
+        await callback.answer(t("admin.banner_deleted_toast", lang))
         await callback.message.delete()
 
 # ------------------------------------------------------------------------------
@@ -327,16 +348,13 @@ async def handle_add_alias_command(message: types.Message, state: Optional[FSMCo
     """Register an alias mapping across any state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
         return
 
-    payload = message.text[len("/addalias") :].strip()
+    payload = (message.text or "")[len("/addalias"):].strip()
     if "=" not in payload:
-        await message.answer(
-            "[Error: Invalid format]\n"
-            "Format: /addalias <term> = <official title>\n"
-            "Example: /addalias tony stark stare = Robert Downey Jr Eye Roll"
-        )
+        await message.answer(t("admin.addalias_usage", lang))
         return
 
     term, canonical = payload.split("=", 1)
@@ -344,14 +362,12 @@ async def handle_add_alias_command(message: types.Message, state: Optional[FSMCo
     canonical = canonical.strip()
 
     if not term or not canonical:
-        await message.answer("[Error: Both alias term and official name are required.]")
+        await message.answer(t("admin.alias_both_required", lang))
         return
 
     await add_alias(term, canonical)
     await message.answer(
-        f"[Success: Alias registered]\n\n"
-        f"• Search Term: <code>{term}</code>\n"
-        f"• Canonical Title: <b>{canonical}</b>",
+        t("admin.alias_added", lang).format(term=term, canonical=canonical),
         parse_mode="HTML",
     )
 
@@ -362,15 +378,20 @@ async def handle_list_aliases_command(message: types.Message, state: Optional[FS
         await state.clear()
     if not is_admin(message.from_user.id):
         return
+    lang = await get_user_lang(message.from_user.id)
 
     aliases = await get_all_aliases()
     if not aliases:
-        await message.answer("[Info: No alias mappings registered.]")
+        await message.answer(t("admin.no_aliases", lang))
         return
 
-    lines = ["<b>[REGISTERED SEARCH ALIASES]</b>\n"]
+    lines = [t("admin.aliases_title", lang) + "\n"]
     for a in aliases:
-        lines.append(f"• <code>{a['alias_term']}</code> -&gt; <b>{a['canonical_name']}</b>")
+        lines.append(
+            t("admin.alias_row", lang).format(
+                term=a["alias_term"], canonical=a["canonical_name"]
+            )
+        )
 
     await message.answer("\n".join(lines), parse_mode="HTML")
 
@@ -379,18 +400,23 @@ async def handle_delete_alias_command(message: types.Message, state: Optional[FS
     """Delete a registered alias mapping across any state."""
     if state:
         await state.clear()
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
         return
 
-    term = message.text[len("/delalias"):].strip()
+    term = (message.text or "")[len("/delalias"):].strip()
     if not term:
-        await message.answer("[Usage: /delalias <term>]")
+        await message.answer(t("admin.delalias_usage", lang))
         return
 
     if await delete_alias(term):
-        await message.answer(f"[Success: Alias <code>{term}</code> removed.]", parse_mode="HTML")
+        await message.answer(
+            t("admin.alias_deleted", lang).format(term=term), parse_mode="HTML"
+        )
     else:
-        await message.answer(f"[Info: No alias found for <code>{term}</code>.]", parse_mode="HTML")
+        await message.answer(
+            t("admin.alias_not_found", lang).format(term=term), parse_mode="HTML"
+        )
 
 # ------------------------------------------------------------------------------
 # Admin Statistics
@@ -403,6 +429,7 @@ async def handle_admin_stats(message: types.Message, state: Optional[FSMContext]
         await state.clear()
     if not is_admin(message.from_user.id):
         return
+    lang = await get_user_lang(message.from_user.id)
 
     templates = await get_all_templates(limit=1000)
     banners = await get_all_banners()
@@ -413,14 +440,15 @@ async def handle_admin_stats(message: types.Message, state: Optional[FSMContext]
     total_banners = len(banners)
     total_aliases = len(aliases)
     total_sources = len(sources)
-    total_uses = sum(t.get("usage_count", 0) for t in templates)
+    total_uses = sum(tpl.get("usage_count", 0) for tpl in templates)
 
-    stats_text = (
-        f"<b>[SYSTEM STATISTICS]</b>\n\n"
-        f"• Total Templates: {total_templates}\n"
-        f"• Total Memes Rendered: {total_uses}\n"
-        f"• Registered Banners: {total_banners}\n"
-        f"• Search Aliases: {total_aliases}\n"
-        f"• External Sources: {total_sources}"
+    await message.answer(
+        t("admin.stats", lang).format(
+            templates=total_templates,
+            uses=total_uses,
+            banners=total_banners,
+            aliases=total_aliases,
+            sources=total_sources,
+        ),
+        parse_mode="HTML",
     )
-    await message.answer(stats_text, parse_mode="HTML")
