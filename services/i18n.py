@@ -315,7 +315,13 @@ LANG = {
         "submit.send_media": "ছবি, ভিডিও বা ফাইল পাঠান। বাতিল করতে /cancel দিন।",
         "submit.skip_title": "নাম ছাড়াই চালিয়ে যান",
         "submit.success": "Template catalog-এ যোগ হয়েছে।\n\nনাম: {title}\nID: #{id}\nধরন: {media}\nTags: {tags}",
-        "submit.title_prompt": "একটা নাম বা tags পাঠান। ডিফল্ট নাম ব্যবহার করতে /skip দিন: {title}",
+        "submit.title_prompt": "একটা নাম বা tags পাঠান। ডিফল্ট নাম ব্যবহার করতে /skip দিন: {title}",        "editor.banner_empty_admin": "কোনো banner নেই। /addbanner দিয়ে প্রথম banner যোগ করুন।",
+        "editor.banner_not_applied": "কোনো banner লাগানো নেই।",
+        "editor.hint_stray_text": "নিচের Edit text বাটন চাপুন লেখা বদলাতে।",
+        "editor.hint_stray_photo": "নতুন ছবি দিয়ে শুরু করতে বাতিল চাপুন।",
+        "editor.wm_not_set": "এখনো watermark সেট করা হয়নি। Settings থেকে সেট করুন।",
+        "admin.banner_send_photo_reminder": "Banner-এর ছবি পাঠান, অথবা বাতিল করতে /cancel লিখুন।",
+
     },
     "en": {
         "admin.access_denied": "Sorry, this command is for admins only.",
@@ -624,7 +630,13 @@ LANG = {
         "submit.send_media": "Send an image, video, or document. Send /cancel to abort.",
         "submit.skip_title": "Skip / Use Default Name",
         "submit.success": "Template added to the catalog.\n\nTitle: {title}\nID: #{id}\nMedia: {media}\nTags: {tags}",
-        "submit.title_prompt": "Send a title or tags, or /skip for the default name: {title}",
+        "submit.title_prompt": "Send a title or tags, or /skip for the default name: {title}",        "editor.banner_empty_admin": "No banners yet. Add the first one with /addbanner.",
+        "editor.banner_not_applied": "No banner applied.",
+        "editor.hint_stray_text": "Press the Edit text button below to change the text.",
+        "editor.hint_stray_photo": "Press Cancel to start over with a new photo.",
+        "editor.wm_not_set": "No watermark set yet. Set one in Settings.",
+        "admin.banner_send_photo_reminder": "Please send the banner image, or /cancel to abort.",
+
     },
 }
 
