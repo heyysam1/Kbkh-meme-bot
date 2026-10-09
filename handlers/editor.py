@@ -625,14 +625,17 @@ async def _update_live_preview(callback: types.CallbackQuery, state: FSMContext,
         rendered_buf = await _render_current_draft(callback.bot, data, callback.from_user.id)
     except Exception as e:
         logger.exception("render failed: %s", e)
+        rendered_buf = None
+    kb = custom_kb or get_editor_keyboard(data, lang)
+
+    if not rendered_buf:
+        # Render failed: update keyboard only so buttons still respond
         try:
-            await callback.answer(t("editor.err_preview", lang) + f" ({type(e).__name__})", show_alert=True)
+            await callback.message.edit_reply_markup(reply_markup=kb)
         except Exception:
             pass
-        return
-    if not rendered_buf:
         try:
-            await callback.answer(t("editor.err_preview", lang), show_alert=True)
+            await callback.answer()
         except Exception:
             pass
         return
@@ -641,15 +644,24 @@ async def _update_live_preview(callback: types.CallbackQuery, state: FSMContext,
         media=BufferedInputFile(rendered_buf.getvalue(), filename="meme_preview.jpg"),
         caption=t("editor.live_preview", lang),
     )
-    kb = custom_kb or get_editor_keyboard(data, lang)
 
     try:
         await callback.message.edit_media(media=input_media, reply_markup=kb)
     except TelegramBadRequest as e:
         if "message is not modified" not in str(e).lower():
             logger.warning("edit_media error: %s", e)
+            # Fallback: update keyboard only so the button still responds
+            try:
+                await callback.message.edit_reply_markup(reply_markup=kb)
+            except Exception:
+                pass
     except Exception as e:
         logger.warning("Failed to update preview: %s", e)
+        # Fallback: update keyboard only so the button still responds
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kb)
+        except Exception:
+            pass
     finally:
         try:
             await callback.answer()
