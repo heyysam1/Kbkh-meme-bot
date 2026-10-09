@@ -7,10 +7,9 @@ import config
 
 logger = logging.getLogger("kbkh_meme_bot.font_manager")
 
-# Strictly defined curated font definitions (Exactly 10 permitted fonts)
+# Strictly defined curated font definitions (Exactly 9 permitted fonts)
 # Each entry: (canonical_key, display_name, script, alternate_filenames)
 CURATED_FONTS: List[Tuple[str, str, str, List[str]]] = [
-    ("Kalpurush.ttf", "Kalpurush", "bengali", ["kalpurush.ttf"]),
     ("AnekBangla.ttf", "Anek Bangla", "bengali", ["AnekBangla-Regular.ttf", "Anek Bangla.ttf"]),
     ("AnekBangla-ExtraBold.ttf", "Anek ExtraBold", "bengali", ["Anek Bangla ExtraBold.ttf"]),
     ("LiSiliguri.ttf", "Li Siliguri", "bengali", ["HindSiliguri.ttf", "HindSiliguri-Bold.ttf", "LiSiliguri.ttf"]),
@@ -26,7 +25,7 @@ CURATED_FONTS: List[Tuple[str, str, str, List[str]]] = [
 class FontManager:
     """
     Strict typography management subsystem for KBKH Meme Bot.
-    Enforces the exact 10 curated fonts and provides Bengali Raqm text layout.
+    Enforces the exact 9 curated fonts and provides Bengali Raqm text layout.
     """
 
     def __init__(self, fonts_dir: Optional[Path] = None):
@@ -55,7 +54,7 @@ class FontManager:
 
     def scan_fonts(self) -> Dict[str, Path]:
         """
-        Scan font directory and register strictly the 10 permitted fonts.
+        Scan font directory and register strictly the 9 permitted fonts.
         All unapproved fonts are ignored.
         """
         self._fonts.clear()
@@ -102,7 +101,7 @@ class FontManager:
     def get_font_path(self, font_key: Optional[str] = None, script: str = "bengali") -> Path:
         """
         Resolve font path from key or script-aware default.
-        Only resolves from the 10 curated fonts.
+        Only resolves from the 9 curated fonts.
         """
         if font_key:
             # Direct match on canonical key
@@ -141,7 +140,7 @@ class FontManager:
     def get_font_list(self) -> List[Tuple[str, str]]:
         """
         Return list of (font_key, display_name) for inline keyboard generation.
-        Strictly contains only the 10 approved fonts in curated order.
+        Strictly contains only the 9 approved fonts in curated order.
         """
         if not self._fonts:
             self.scan_fonts()

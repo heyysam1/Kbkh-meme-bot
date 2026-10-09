@@ -4,8 +4,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from database.queries import add_template
+from database.queries import add_template, get_user_lang
 from handlers.channel import extract_template_metadata
+from services.i18n import t
 
 router = Router(name="submission_router")
 
@@ -23,15 +24,16 @@ async def start_template_submission(event: types.Message | types.CallbackQuery, 
     if isinstance(event, types.CallbackQuery):
         await event.answer()
 
+    lang = await get_user_lang(event.from_user.id)
     await state.clear()
     await state.set_state(TemplateUploadSG.waiting_for_media)
 
     cancel_kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="[Cancel]", callback_data="cancel_submission")]]
+        inline_keyboard=[[InlineKeyboardButton(text=t("misc.cancel", lang), callback_data="cancel_submission")]]
     )
 
     await message.answer(
-        "[Send the image, video, or document. Send /cancel to abort.]",
+        t("submit.send_media", lang),
         reply_markup=cancel_kb,
     )
 
@@ -50,14 +52,16 @@ async def cancel_submission(event: types.Message | types.CallbackQuery, state: F
     if isinstance(event, types.CallbackQuery):
         await event.answer()
 
-    await message.answer("[Submission cancelled. Returning to main menu.]")
+    lang = await get_user_lang(event.from_user.id)
+    await message.answer(t("submit.cancelled", lang))
 
 @router.message(TemplateUploadSG.waiting_for_media, F.photo | F.document | F.video | F.animation)
 async def process_submission_media(message: types.Message, state: FSMContext):
     """Validate and store submitted media file."""
+    lang = await get_user_lang(message.from_user.id)
     meta = extract_template_metadata(message)
     if not meta:
-        await message.answer("[Error: Could not extract valid media. Please send a photo, video, or image document.]")
+        await message.answer(t("submit.err_media", lang))
         return
 
     file_id, file_unique_id, media_type, auto_title, auto_tags = meta
@@ -73,20 +77,21 @@ async def process_submission_media(message: types.Message, state: FSMContext):
 
     skip_kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="[Skip / Use Default Name]", callback_data="submission_skip_title")],
-            [InlineKeyboardButton(text="[Cancel]", callback_data="cancel_submission")],
+            [InlineKeyboardButton(text=t("submit.skip_title", lang), callback_data="submission_skip_title")],
+            [InlineKeyboardButton(text=t("misc.cancel", lang), callback_data="cancel_submission")],
         ]
     )
 
     await message.answer(
-        f"[Send a title or tags, or send /skip to use default name: '{auto_title}']",
+        t("submit.title_prompt", lang).format(title=auto_title),
         reply_markup=skip_kb,
     )
 
 @router.message(TemplateUploadSG.waiting_for_media, ~F.text.startswith("/"))
 async def process_invalid_media(message: types.Message):
     """Handle non-media input in media upload state."""
-    await message.answer("[Invalid input. Send an image, video, or document file, or /cancel to abort.]")
+    lang = await get_user_lang(message.from_user.id)
+    await message.answer(t("submit.err_invalid", lang))
 
 @router.callback_query(TemplateUploadSG.waiting_for_title, F.data == "submission_skip_title")
 @router.message(TemplateUploadSG.waiting_for_title, Command("skip"))
@@ -121,6 +126,7 @@ async def process_custom_title(message: types.Message, state: FSMContext):
 
 async def _finalize_template_save(message: types.Message, state: FSMContext, data: dict, title: str, tags: str, user_id: int):
     """Persist template to database and present action buttons."""
+    lang = await get_user_lang(user_id)
     file_id = data["file_id"]
     file_unique_id = data.get("file_unique_id")
     media_type = data.get("media_type", "photo")
@@ -142,17 +148,13 @@ async def _finalize_template_save(message: types.Message, state: FSMContext, dat
     success_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="[Use Template]", callback_data=f"btn_create:{template_id}"),
-                InlineKeyboardButton(text="[Back to Catalog]", callback_data="menu_browse"),
+                InlineKeyboardButton(text=t("misc.create_meme", lang), callback_data=f"btn_create:{template_id}"),
+                InlineKeyboardButton(text=t("submit.back_catalog", lang), callback_data="menu_browse"),
             ]
         ]
     )
 
     await message.answer(
-        f"[Success: Template added to the catalog.]\n\n"
-        f"Title: {title}\n"
-        f"ID: #{template_id}\n"
-        f"Media: {media_type}\n"
-        f"Tags: {tags}",
+        t("submit.success", lang).format(title=title, id=template_id, media=media_type, tags=tags),
         reply_markup=success_kb,
     )

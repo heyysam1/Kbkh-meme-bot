@@ -5,7 +5,7 @@ import math
 import textwrap
 from pathlib import Path
 from typing import Optional, Tuple, Union
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageEnhance
 import config
 from services.effects import apply_filter
 from services.font_manager import font_manager
@@ -172,6 +172,15 @@ def _sync_render_worker(
     watermark_opacity: float = 0.8,
     watermark_enabled: bool = True,
     banner_bytes: Optional[bytes] = None,
+    text_offset_y: int = 0,
+    font_scale: float = 1.0,
+    text_align: str = "center",
+    stroke_color: Optional[str] = None,
+    text_bg: bool = False,
+    flip: bool = False,
+    crop: str = "off",
+    brightness: float = 1.0,
+    contrast: float = 1.0,
 ) -> io.BytesIO:
     """
     Synchronous rendering core for KBKH Meme Generator running inside worker thread.
@@ -182,6 +191,25 @@ def _sync_render_worker(
         base_image = Image.open(io.BytesIO(template_bytes)).convert("RGB")
     except Exception as e:
         raise ValueError("Unsupported template media: not a readable image") from e
+
+    # 1b. Horizontal mirror (before any other transform)
+    if flip:
+        base_image = ImageOps.mirror(base_image)
+
+    # 1c. Center crop to the requested aspect ratio (before downscale)
+    crop_key = (crop or "off").lower().strip()
+    if crop_key in ("square", "1:1", "4:5"):
+        target_aspect = 1.0 if crop_key in ("square", "1:1") else 0.8
+        cw, ch = base_image.size
+        if cw / max(1, ch) > target_aspect:
+            new_w = max(1, int(ch * target_aspect))
+            x0 = (cw - new_w) // 2
+            base_image = base_image.crop((x0, 0, x0 + new_w, ch))
+        else:
+            new_h = max(1, int(cw / target_aspect))
+            y0 = (ch - new_h) // 2
+            base_image = base_image.crop((0, y0, cw, y0 + new_h))
+
     w, h = base_image.size
 
     # Downscale excessively large template images to prevent container OOM
@@ -190,13 +218,59 @@ def _sync_render_worker(
         base_image.thumbnail((MAX_CANVAS_DIM, MAX_CANVAS_DIM), Image.Resampling.LANCZOS)
         w, h = base_image.size
 
+    # 1d. Brightness / contrast adjustments
+    try:
+        b_val = max(0.5, min(2.0, float(brightness)))
+    except (TypeError, ValueError):
+        b_val = 1.0
+    try:
+        c_val = max(0.5, min(2.0, float(contrast)))
+    except (TypeError, ValueError):
+        c_val = 1.0
+    if b_val != 1.0:
+        base_image = ImageEnhance.Brightness(base_image).enhance(b_val)
+    if c_val != 1.0:
+        base_image = ImageEnhance.Contrast(base_image).enhance(c_val)
+
     # Apply Visual Effect / Filter
     base_image = apply_filter(base_image, filter_name)
 
-    # Padding and text sizing calculations
+    # Padding and text sizing calculations (font_scale multiplies auto-fit size)
     padding = max(16, round(w * 0.025))
     max_text_width = w - (2 * padding)
-    initial_font_size = max(24, min(96, round(w * 0.055)))
+    try:
+        fs = max(0.5, min(2.0, float(font_scale)))
+    except (TypeError, ValueError):
+        fs = 1.0
+    initial_font_size = max(24, min(96, round(w * 0.055 * fs)))
+
+    # Text vertical nudge (px, clamped to half the canvas height)
+    try:
+        y_off = int(text_offset_y or 0)
+    except (TypeError, ValueError):
+        y_off = 0
+    y_off = max(-h // 2, min(h // 2, y_off))
+
+    # Text alignment: left / center / right
+    align_key = (text_align or "center").lower().strip()
+    if align_key not in ("left", "center", "right"):
+        align_key = "center"
+
+    # Semi-transparent backdrop box behind each text block
+    def _with_text_bg(canvas_img: Image.Image, box: Tuple[int, int, int, int]) -> Image.Image:
+        overlay = Image.new("RGBA", canvas_img.size, (0, 0, 0, 0))
+        odraw = ImageDraw.Draw(overlay)
+        x0, y0, x1, y1 = box
+        pad = max(6, round(w * 0.012))
+        odraw.rectangle((x0 - pad, y0 - pad, x1 + pad, y1 + pad), fill=(0, 0, 0, 140))
+        return Image.alpha_composite(canvas_img.convert("RGBA"), overlay).convert("RGB")
+
+    def _seg_x(seg_w: int) -> int:
+        if align_key == "left":
+            return padding
+        if align_key == "right":
+            return w - seg_w - padding
+        return (w - seg_w) // 2
 
     # Dummy canvas for measurement
     dummy_img = Image.new("RGB", (10, 10))
@@ -214,6 +288,14 @@ def _sync_render_worker(
     custom_color = text_color.strip().lower() not in ("white", "#ffffff")
     is_bright_text = (0.299 * parsed_text_color[0] + 0.587 * parsed_text_color[1] + 0.114 * parsed_text_color[2]) >= 128
     default_stroke_fill = (0, 0, 0) if is_bright_text else (255, 255, 255)
+    # Explicit stroke color choice overrides the automatic contrast pick.
+    if stroke_color:
+        try:
+            stroke_fill = parse_color(stroke_color)
+        except Exception:
+            stroke_fill = default_stroke_fill
+    else:
+        stroke_fill = default_stroke_fill
 
     variant_key = variant.lower().strip()
 
@@ -236,8 +318,11 @@ def _sync_render_worker(
             wrapped_top, top_font, tw, th = _fit_text(
                 top_text, font_path, initial_font_size, max_text_width, max_seg_height, dummy_draw
             )
-            top_x = (w - tw) // 2
-            top_y = padding
+            top_x = _seg_x(tw)
+            top_y = padding + y_off
+            if text_bg:
+                canvas = _with_text_bg(canvas, (top_x, top_y, top_x + tw, top_y + th))
+                draw = ImageDraw.Draw(canvas)
 
             # Auto-halo / drop-shadow if stroke is 0
             if stroke_width == 0:
@@ -246,7 +331,7 @@ def _sync_render_worker(
                     wrapped_top,
                     font=top_font,
                     fill=(0, 0, 0) if is_bright_text else (255, 255, 255),
-                    align="center",
+                    align=align_key,
                     spacing=int(top_font.size * 0.2),
                 )
 
@@ -256,8 +341,8 @@ def _sync_render_worker(
                 font=top_font,
                 fill=parsed_text_color,
                 stroke_width=stroke_width,
-                stroke_fill=default_stroke_fill if stroke_width > 0 else None,
-                align="center",
+                stroke_fill=stroke_fill if stroke_width > 0 else None,
+                align=align_key,
                 spacing=int(top_font.size * 0.2),
             )
 
@@ -265,8 +350,11 @@ def _sync_render_worker(
             wrapped_bot, bot_font, bw, bh = _fit_text(
                 bottom_text, font_path, initial_font_size, max_text_width, max_seg_height, dummy_draw
             )
-            bot_x = (w - bw) // 2
-            bot_y = h - bh - padding
+            bot_x = _seg_x(bw)
+            bot_y = h - bh - padding + y_off
+            if text_bg:
+                canvas = _with_text_bg(canvas, (bot_x, bot_y, bot_x + bw, bot_y + bh))
+                draw = ImageDraw.Draw(canvas)
 
             if stroke_width == 0:
                 draw.multiline_text(
@@ -274,7 +362,7 @@ def _sync_render_worker(
                     wrapped_bot,
                     font=bot_font,
                     fill=(0, 0, 0) if is_bright_text else (255, 255, 255),
-                    align="center",
+                    align=align_key,
                     spacing=int(bot_font.size * 0.2),
                 )
 
@@ -284,8 +372,8 @@ def _sync_render_worker(
                 font=bot_font,
                 fill=parsed_text_color,
                 stroke_width=stroke_width,
-                stroke_fill=default_stroke_fill if stroke_width > 0 else None,
-                align="center",
+                stroke_fill=stroke_fill if stroke_width > 0 else None,
+                align=align_key,
                 spacing=int(bot_font.size * 0.2),
             )
 
@@ -306,14 +394,17 @@ def _sync_render_worker(
         canvas.paste(base_image, (0, 0))
         draw = ImageDraw.Draw(canvas)
 
-        text_x = (w - tw) // 2
-        text_y = h + padding
+        text_x = _seg_x(tw)
+        text_y = h + padding + y_off
+        if text_bg:
+            canvas = _with_text_bg(canvas, (text_x, text_y, text_x + tw, text_y + th))
+            draw = ImageDraw.Draw(canvas)
         draw.multiline_text(
             (text_x, text_y),
             wrapped_text,
             font=font,
             fill=parsed_text_color,
-            align="center",
+            align=align_key,
             spacing=int(font.size * 0.2),
         )
 
@@ -344,8 +435,11 @@ def _sync_render_worker(
             cleaned_text, font_path, max(18, round(ticker_h * 0.40)), ticker_max_w, ticker_h - 10, dummy_draw
         )
         news_x = label_w + 14
-        news_y = ticker_y + (ticker_h - nh) // 2
-        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=parsed_text_color if custom_color else (255, 230, 0))
+        news_y = ticker_y + (ticker_h - nh) // 2 + y_off
+        if text_bg:
+            canvas = _with_text_bg(canvas, (news_x, news_y, news_x + nw, news_y + nh))
+            draw = ImageDraw.Draw(canvas)
+        draw.multiline_text((news_x, news_y), wrapped_news, font=news_font, fill=parsed_text_color if custom_color else (255, 230, 0), align=align_key)
 
     else:
         # Variant: Top Banner (Default White/Dark Header extending canvas upward)
@@ -364,14 +458,17 @@ def _sync_render_worker(
         canvas = Image.new("RGB", (w, total_height), header_bg_color)
         draw = ImageDraw.Draw(canvas)
 
-        text_x = (w - tw) // 2
-        text_y = padding
+        text_x = _seg_x(tw)
+        text_y = padding + y_off
+        if text_bg:
+            canvas = _with_text_bg(canvas, (text_x, text_y, text_x + tw, text_y + th))
+            draw = ImageDraw.Draw(canvas)
         draw.multiline_text(
             (text_x, text_y),
             wrapped_text,
             font=font,
             fill=text_c,
-            align="center",
+            align=align_key,
             spacing=int(font.size * 0.2),
         )
 
@@ -521,6 +618,15 @@ async def render_meme(
     watermark_opacity: float = 0.8,
     watermark_enabled: bool = True,
     banner_bytes: Optional[bytes] = None,
+    text_offset_y: int = 0,
+    font_scale: float = 1.0,
+    text_align: str = "center",
+    stroke_color: Optional[str] = None,
+    text_bg: bool = False,
+    flip: bool = False,
+    crop: str = "off",
+    brightness: float = 1.0,
+    contrast: float = 1.0,
 ) -> io.BytesIO:
     """
     Public asynchronous entry point for meme rendering.
@@ -544,4 +650,13 @@ async def render_meme(
         watermark_opacity,
         watermark_enabled,
         banner_bytes,
+        text_offset_y,
+        font_scale,
+        text_align,
+        stroke_color,
+        text_bg,
+        flip,
+        crop,
+        brightness,
+        contrast,
     )

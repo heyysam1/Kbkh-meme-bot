@@ -5,7 +5,7 @@ Periodically fetches images from admin-configured external sources
 (`sources` DB table) and ingests them into the template catalog.
 Zero-disk: images stream through memory and are uploaded to Telegram
 via a sink chat only to obtain a file_id, then the sink message is
-deleted. Strict zero emoji, bracketed text style.
+deleted. Plain user-facing language, no emojis.
 """
 
 import asyncio
@@ -23,10 +23,12 @@ import config
 from database.queries import (
     add_template,
     get_all_sources,
+    get_user_lang,
     is_url_scraped,
     mark_url_scraped,
 )
 from handlers.admin import is_admin
+from services.i18n import t
 
 logger = logging.getLogger("kbkh_meme_bot.source_scraper")
 
@@ -238,14 +240,14 @@ async def scraper_loop(bot: Bot, interval_hours: float = 6) -> None:
 @router.message(Command("scrape"), StateFilter("*"))
 async def handle_scrape_command(message: types.Message, bot: Bot):
     """Admin-only manual trigger for the source scraper."""
+    lang = await get_user_lang(message.from_user.id)
     if not is_admin(message.from_user.id):
-        await message.answer("[Access denied: admin only.]")
+        await message.answer(t("admin.access_denied", lang))
         return
-    await message.answer("[Scraping configured sources...]")
     try:
         ingested = await scrape_all_sources(bot)
     except Exception as e:
         logger.warning("Manual scrape failed: %s", e, exc_info=True)
-        await message.answer("[Scrape failed. Check logs.]")
+        await message.answer(t("scraper.failed", lang))
         return
-    await message.answer(f"[Done. Ingested {ingested} new template(s).]")
+    await message.answer(t("scraper.done", lang).format(ingested=ingested))

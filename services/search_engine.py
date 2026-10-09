@@ -14,8 +14,11 @@ _EXTERNAL_MEMES_CACHE: List[Dict[str, Any]] = []
 _EXTERNAL_CACHE_TIMESTAMP: float = 0.0
 _EXTERNAL_CACHE_TTL: float = 3600.0  # 1 hour cache
 
-# Registry of discovered external templates for instant callback resolution
+# Registry of discovered external templates for instant callback resolution.
+# Each entry carries a cached timestamp so refresh cycles prune only entries
+# older than 2x TTL instead of wiping in-flight [Use Template] buttons.
 _EXTERNAL_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_EXTERNAL_REGISTRY_TS: Dict[str, float] = {}
 
 def normalize_query(query: str) -> str:
     """
@@ -132,8 +135,13 @@ async def _fetch_imgflip_memes() -> List[Dict[str, Any]]:
                     if memes:
                         _EXTERNAL_MEMES_CACHE = memes
                         _EXTERNAL_CACHE_TIMESTAMP = now
-                        # Old external ids are stale after a refresh; bound the registry.
-                        _EXTERNAL_REGISTRY.clear()
+                        # Merge instead of clear: drop only entries older than
+                        # 2x TTL so in-flight external [Use Template] buttons
+                        # keep resolving after a cache refresh.
+                        cutoff = now - (2 * _EXTERNAL_CACHE_TTL)
+                        for ext_id in [eid for eid, ts in _EXTERNAL_REGISTRY_TS.items() if ts < cutoff]:
+                            _EXTERNAL_REGISTRY.pop(ext_id, None)
+                            _EXTERNAL_REGISTRY_TS.pop(ext_id, None)
                         return memes
     except Exception as e:
         logger.warning("Imgflip API fetch error: %s", e)
@@ -204,6 +212,7 @@ async def search_external_memes(query: str, limit: int = 3) -> List[Dict[str, An
                 "search_score": round(score, 4),
             }
             _EXTERNAL_REGISTRY[ext_id] = item
+            _EXTERNAL_REGISTRY_TS[ext_id] = time.time()
             matches.append(item)
 
     matches.sort(key=lambda x: x["search_score"], reverse=True)
@@ -223,6 +232,7 @@ async def search_external_memes(query: str, limit: int = 3) -> List[Dict[str, An
                 "search_score": 0.65,
             }
             _EXTERNAL_REGISTRY[ext_id] = rm_item
+            _EXTERNAL_REGISTRY_TS[ext_id] = time.time()
             matches.append(rm_item)
 
     return matches[:limit]
