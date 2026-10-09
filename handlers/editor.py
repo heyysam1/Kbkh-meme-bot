@@ -3,6 +3,7 @@ import logging
 from typing import Optional
 from aiogram import Router, types, F
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -17,6 +18,11 @@ from database.queries import (
     increment_template_usage,
     get_user,
     upsert_user,
+    get_all_banners,
+    get_banner_by_id,
+    save_draft,
+    get_draft,
+    delete_draft,
 )
 from services.font_manager import font_manager
 from services.renderer import render_meme
@@ -34,7 +40,7 @@ class EditorSG(StatesGroup):
 # Quick toggle and testing cycles (Zero Emoji)
 LAYOUT_CYCLES = ["overlay", "top_banner", "bottom_banner", "breaking_news"]
 COLOR_CYCLES = ["white", "yellow", "cyan", "red", "black"]
-STROKE_CYCLES = [0, 2, 4, 8]
+STROKE_CYCLES = [0, 2, 5, 8]
 CASE_CYCLES = ["raw", "upper", "title"]
 FILTER_CYCLES = ["none", "deepfry", "grayscale", "invert"]
 WM_POS_CYCLES = ["bottom_right", "bottom_left", "top_left", "top_right", "bottom_center"]
@@ -128,6 +134,9 @@ def get_editor_keyboard(data: dict) -> InlineKeyboardMarkup:
     if font_key:
         font_name = font_manager.sanitize_display_name(font_key)[:10]
 
+    case = data.get("case_mode", "raw").upper()
+    logo_state = "OFF" if data.get("is_clean", False) else "ON"
+
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -139,12 +148,22 @@ def get_editor_keyboard(data: dict) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=f"[Filter: {fx}]", callback_data="edit:menu:fx"),
             ],
             [
+                InlineKeyboardButton(text=f"[Case: {case}]", callback_data="ed_cycle_case"),
+                InlineKeyboardButton(text=f"[Brand Logo: {logo_state}]", callback_data="ed_toggle_clean"),
+            ],
+            [
                 InlineKeyboardButton(text=f"[Font: {font_name}]", callback_data="edit:menu:font"),
                 InlineKeyboardButton(text=f"[Watermark: {wm_state}]", callback_data="edit:wm_toggle"),
             ],
             [
                 InlineKeyboardButton(text=f"[Pos: {wm_pos}]", callback_data="edit:menu:wm_pos"),
                 InlineKeyboardButton(text=f"[Scale: {wm_scale}]", callback_data="edit:menu:wm_scale"),
+            ],
+            [
+                InlineKeyboardButton(text="[Banner]", callback_data="edit:banner:menu"),
+            ],
+            [
+                InlineKeyboardButton(text="[Save Draft]", callback_data="edit:save_draft"),
             ],
             [
                 InlineKeyboardButton(text="[Export Photo]", callback_data="edit:export:photo"),
@@ -351,6 +370,17 @@ async def _render_current_draft(bot, data: dict, user_id: int) -> Optional[io.By
     elif user and user.get("watermark_text"):
         watermark_text = user["watermark_text"]
 
+    # Fetch attached promotional banner bytes, if any
+    banner_bytes = None
+    banner_id = data.get("banner_id")
+    if banner_id:
+        try:
+            banner = await get_banner_by_id(int(banner_id))
+        except (TypeError, ValueError):
+            banner = None
+        if banner and banner.get("file_id"):
+            banner_bytes = await _fetch_telegram_file_bytes(bot, banner["file_id"])
+
     return await render_meme(
         template_bytes=raw_template_bytes,
         text=text,
@@ -367,6 +397,7 @@ async def _render_current_draft(bot, data: dict, user_id: int) -> Optional[io.By
         watermark_scale=data.get("watermark_scale", 1.0),
         watermark_opacity=data.get("watermark_opacity", 0.8),
         watermark_enabled=data.get("watermark_enabled", True),
+        banner_bytes=banner_bytes,
     )
 
 
@@ -435,19 +466,41 @@ async def handle_download_raw_template(callback: types.CallbackQuery):
 
     file_id = template["file_id"]
     title = template.get("title") or template.get("name") or "Template"
+    media_type = template.get("media_type") or "photo"
 
     await callback.answer("[Sending raw template...]")
 
-    await callback.message.bot.send_photo(
-        chat_id=callback.message.chat.id,
-        photo=file_id,
-        caption=f"[Raw Photo Preview: {title}]",
-    )
-    await callback.message.bot.send_document(
-        chat_id=callback.message.chat.id,
-        document=file_id,
-        caption=f"[Raw Document File: {title}]",
-    )
+    bot = callback.message.bot
+    chat_id = callback.message.chat.id
+    if media_type == "video":
+        await bot.send_video(
+            chat_id=chat_id,
+            video=file_id,
+            caption=f"[Raw Video File: {title}]",
+        )
+    elif media_type == "animation":
+        await bot.send_animation(
+            chat_id=chat_id,
+            animation=file_id,
+            caption=f"[Raw Animation File: {title}]",
+        )
+    elif media_type == "document":
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file_id,
+            caption=f"[Raw Document File: {title}]",
+        )
+    else:
+        await bot.send_photo(
+            chat_id=chat_id,
+            photo=file_id,
+            caption=f"[Raw Photo Preview: {title}]",
+        )
+        await bot.send_document(
+            chat_id=chat_id,
+            document=file_id,
+            caption=f"[Raw Document File: {title}]",
+        )
 
 
 @router.callback_query(F.data.startswith("btn_create:") | F.data.startswith("cb_create_meme:"))
@@ -557,7 +610,7 @@ async def cb_open_layout_menu(callback: types.CallbackQuery):
     await _show_submenu(callback, get_layout_matrix_keyboard(), "[Select Layout Variant]")
 
 
-@router.callback_query(F.data == "edit:menu:font" or F.data == "ed_menu_font")
+@router.callback_query(F.data == "edit:menu:font" | F.data == "ed_menu_font")
 async def cb_open_font_menu(callback: types.CallbackQuery):
     """Open Font Selector Matrix menu."""
     await _show_submenu(callback, get_font_matrix_keyboard(), "[Select Typography Font]")
@@ -593,7 +646,7 @@ async def cb_open_fx_menu(callback: types.CallbackQuery):
     await _show_submenu(callback, get_fx_matrix_keyboard(), "[Select Canvas FX Filter]")
 
 
-@router.callback_query(F.data == "edit:back" or F.data == "ed_back_to_editor")
+@router.callback_query(F.data == "edit:back" | F.data == "ed_back_to_editor")
 async def cb_back_to_dashboard(callback: types.CallbackQuery, state: FSMContext):
     """Return to main editor controls without re-rendering."""
     data = await state.get_data()
@@ -690,7 +743,7 @@ async def cb_set_wm_scale(callback: types.CallbackQuery, state: FSMContext):
     await _update_live_preview(callback, state, data)
 
 
-@router.callback_query(F.data == "edit:wm_toggle" or F.data == "ed_toggle_wm")
+@router.callback_query(F.data == "edit:wm_toggle" | F.data == "ed_toggle_wm")
 async def cb_toggle_wm(callback: types.CallbackQuery, state: FSMContext):
     """Toggle watermark ON/OFF and immediately update preview."""
     data = await state.get_data()
@@ -794,10 +847,108 @@ async def cb_toggle_clean(callback: types.CallbackQuery, state: FSMContext):
 
 
 # ------------------------------------------------------------------------------
+# Promotional Banner Controls (user-side opt-in banners)
+# ------------------------------------------------------------------------------
+
+@router.callback_query(F.data == "edit:banner:menu")
+async def cb_banner_menu(callback: types.CallbackQuery):
+    """Present opt-in promotional banner choices from the database."""
+    banners = await get_all_banners()
+    if not banners:
+        await callback.answer("[No promotional banners available.]", show_alert=True)
+        return
+
+    rows = []
+    for b in banners:
+        name = b.get("name") or f"Banner #{b['id']}"
+        rows.append([
+            InlineKeyboardButton(text=f"[{name}]", callback_data=f"edit:banner:apply:{b['id']}"),
+            InlineKeyboardButton(text="[Download]", callback_data=f"edit:banner:dl:{b['id']}"),
+        ])
+    rows.append([InlineKeyboardButton(text="[Remove Banner]", callback_data="edit:banner:remove")])
+    rows.append([InlineKeyboardButton(text="[<< Back to Editor]", callback_data="edit:back")])
+    await _show_submenu(callback, InlineKeyboardMarkup(inline_keyboard=rows), "[Select Banner]")
+
+
+@router.callback_query(F.data.startswith("edit:banner:apply:"))
+async def cb_banner_apply(callback: types.CallbackQuery, state: FSMContext):
+    """Attach the selected promotional banner and re-render the live preview."""
+    banner_id_str = callback.data.rsplit(":", 1)[1]
+    if not banner_id_str.isdigit():
+        await callback.answer("[Error: Invalid banner ID.]", show_alert=True)
+        return
+
+    banner = await get_banner_by_id(int(banner_id_str))
+    if not banner or not banner.get("file_id"):
+        await callback.answer("[Banner not found.]", show_alert=True)
+        return
+
+    banner_bytes = await _fetch_telegram_file_bytes(callback.bot, banner["file_id"])
+    if not banner_bytes:
+        await callback.answer("[Error downloading banner file.]", show_alert=True)
+        return
+
+    data = await state.get_data()
+    data["banner_id"] = banner["id"]
+    await state.update_data(banner_id=banner["id"])
+    await callback.answer("[Banner applied.]")
+    try:
+        await _update_live_preview(callback, state, data)
+    except Exception as e:
+        logger.warning("Banner apply preview failed: %s", e)
+        await callback.answer("[Error applying banner.]", show_alert=True)
+
+
+@router.callback_query(F.data == "edit:banner:remove")
+async def cb_banner_remove(callback: types.CallbackQuery, state: FSMContext):
+    """Detach the promotional banner and re-render the live preview."""
+    data = await state.get_data()
+    data["banner_id"] = None
+    await state.update_data(banner_id=None)
+    await callback.answer("[Banner removed.]")
+    try:
+        await _update_live_preview(callback, state, data)
+    except Exception as e:
+        logger.warning("Banner remove preview failed: %s", e)
+        await callback.answer("[Error removing banner.]", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit:banner:dl:"))
+async def cb_banner_download(callback: types.CallbackQuery):
+    """Send the banner file standalone (photo + document) without applying it to the meme."""
+    banner_id_str = callback.data.rsplit(":", 1)[1]
+    if not banner_id_str.isdigit():
+        await callback.answer("[Error: Invalid banner ID.]", show_alert=True)
+        return
+
+    banner = await get_banner_by_id(int(banner_id_str))
+    if not banner or not banner.get("file_id"):
+        await callback.answer("[Banner not found.]", show_alert=True)
+        return
+
+    name = banner.get("name") or f"Banner #{banner['id']}"
+    await callback.answer("[Sending banner...]")
+    try:
+        await callback.message.bot.send_photo(
+            chat_id=callback.message.chat.id,
+            photo=banner["file_id"],
+            caption=f"[Banner: {name}]",
+        )
+        await callback.message.bot.send_document(
+            chat_id=callback.message.chat.id,
+            document=banner["file_id"],
+            caption=f"[Banner File: {name}]",
+        )
+    except Exception as e:
+        logger.warning("Banner download failed: %s", e)
+        await callback.answer("[Error sending banner.]", show_alert=True)
+
+
+# ------------------------------------------------------------------------------
 # Action Handlers (Export, Reset, Cancel, Change Text)
 # ------------------------------------------------------------------------------
 
-@router.callback_query(F.data == "edit:export:photo" or F.data == "ed_export_photo")
+@router.callback_query(F.data == "edit:export:photo" | F.data == "ed_export_photo")
 async def cb_export_photo(callback: types.CallbackQuery, state: FSMContext):
     """Export finalized meme as standard photo and reset state."""
     await callback.answer("[Exporting photo...]")
@@ -819,7 +970,7 @@ async def cb_export_photo(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == "edit:export:doc" or F.data == "ed_export_doc")
+@router.callback_query(F.data == "edit:export:doc" | F.data == "ed_export_doc")
 async def cb_export_doc(callback: types.CallbackQuery, state: FSMContext):
     """Export finalized meme as uncompressed lossless document and reset state."""
     await callback.answer("[Exporting document...]")
@@ -841,7 +992,7 @@ async def cb_export_doc(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
 
 
-@router.callback_query(F.data == "edit:reset" or F.data == "ed_reset")
+@router.callback_query(F.data == "edit:reset" | F.data == "ed_reset")
 async def cb_reset_editor(callback: types.CallbackQuery, state: FSMContext):
     """Revert modifications to baseline defaults."""
     data = await state.get_data()
@@ -855,6 +1006,7 @@ async def cb_reset_editor(callback: types.CallbackQuery, state: FSMContext):
         watermark_enabled=True,
         watermark_pos="bottom_right",
         watermark_scale=1.0,
+        banner_id=None,
     )
     await state.update_data(
         variant="overlay",
@@ -866,11 +1018,12 @@ async def cb_reset_editor(callback: types.CallbackQuery, state: FSMContext):
         watermark_enabled=True,
         watermark_pos="bottom_right",
         watermark_scale=1.0,
+        banner_id=None,
     )
     await _update_live_preview(callback, state, data)
 
 
-@router.callback_query(F.data == "edit:change_text" or F.data == "ed_change_text")
+@router.callback_query(F.data == "edit:change_text" | F.data == "ed_change_text")
 async def cb_change_text(callback: types.CallbackQuery, state: FSMContext):
     """Prompt user to re-enter text."""
     await state.set_state(EditorSG.waiting_for_text)
@@ -881,7 +1034,7 @@ async def cb_change_text(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer("[Send new text for this meme]:", reply_markup=cancel_kb)
 
 
-@router.callback_query(F.data == "edit:cancel" or F.data == "ed_cancel")
+@router.callback_query(F.data == "edit:cancel" | F.data == "ed_cancel")
 async def cb_cancel_editor(callback: types.CallbackQuery, state: FSMContext):
     """Cancel editing session and clear state."""
     await state.clear()
@@ -891,3 +1044,112 @@ async def cb_cancel_editor(callback: types.CallbackQuery, state: FSMContext):
     except Exception:
         pass
     await callback.message.answer("[Editor session closed.]")
+
+
+# ------------------------------------------------------------------------------
+# Draft Save / Resume / Delete
+# ------------------------------------------------------------------------------
+
+# Only these editor state keys are persisted into / restored from a draft.
+_DRAFT_KEYS = (
+    "template_id",
+    "file_id",
+    "text",
+    "variant",
+    "text_color",
+    "stroke_width",
+    "case_mode",
+    "filter",
+    "font_key",
+    "watermark_enabled",
+    "watermark_pos",
+    "watermark_scale",
+    "watermark_file_id",
+    "watermark_text",
+    "watermark_opacity",
+    "banner_id",
+    "is_clean",
+)
+
+
+@router.callback_query(F.data == "edit:save_draft")
+async def cb_save_draft(callback: types.CallbackQuery, state: FSMContext):
+    """Persist the current editor state as a resumable draft (editing session is kept)."""
+    data = await state.get_data()
+    if not data.get("file_id"):
+        await callback.answer("[Nothing to save yet.]", show_alert=True)
+        return
+    clean = {k: v for k, v in data.items() if k in _DRAFT_KEYS}
+    await save_draft(callback.from_user.id, clean)
+    await callback.answer("[Draft saved. Resume anytime with /drafts.]")
+
+
+@router.message(Command("drafts"), StateFilter("*"), flags={"state": "*"})
+async def handle_drafts_command(message: types.Message, state: FSMContext):
+    """Show the user's saved draft with resume / delete actions."""
+    await state.clear()
+    draft = await get_draft(message.from_user.id)
+    if not draft:
+        await message.answer("[No saved draft. Use [Save Draft] in the editor.]")
+        return
+
+    text_snippet = (draft.get("text") or "No text")[:60]
+    variant = str(draft.get("variant", "overlay")).replace("_", " ").upper()
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="[Resume Draft]", callback_data="edit:draft:resume")],
+            [InlineKeyboardButton(text="[Delete Draft]", callback_data="edit:draft:delete")],
+        ]
+    )
+    await message.answer(
+        f"[SAVED DRAFT]\nText: {text_snippet}\nLayout: {variant}",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data == "edit:draft:resume")
+async def cb_draft_resume(callback: types.CallbackQuery, state: FSMContext):
+    """Restore a saved draft into a fresh editor session with a new preview photo."""
+    draft = await get_draft(callback.from_user.id)
+    if not draft:
+        await callback.answer("[Draft not found.]", show_alert=True)
+        return
+
+    data = {k: v for k, v in draft.items() if k in _DRAFT_KEYS and v is not None}
+    # DB stores the filter under `filter_name`; map it back to the editor's `filter` key.
+    if "filter" not in data and draft.get("filter_name"):
+        data["filter"] = draft["filter_name"]
+    await state.clear()
+    await state.update_data(**data)
+    await state.set_state(EditorSG.editing)
+
+    await callback.answer("[Draft resumed.]")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    rendered_buf = await _render_current_draft(callback.bot, data, callback.from_user.id)
+    if not rendered_buf:
+        await callback.message.answer("[Error: Failed to render draft preview. Please try again.]")
+        return
+
+    input_file = BufferedInputFile(rendered_buf.getvalue(), filename="meme_preview.jpg")
+    kb = get_editor_keyboard(data)
+    preview_msg = await callback.message.answer_photo(
+        photo=input_file,
+        caption="[Live Preview Mode - Draft Resumed]\nUse controls below to customize layout, colors, stroke, filters, and watermark:",
+        reply_markup=kb,
+    )
+    await state.update_data(preview_message_id=preview_msg.message_id)
+
+
+@router.callback_query(F.data == "edit:draft:delete")
+async def cb_draft_delete(callback: types.CallbackQuery):
+    """Delete the user's saved draft."""
+    await delete_draft(callback.from_user.id)
+    await callback.answer("[Draft deleted.]")
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass

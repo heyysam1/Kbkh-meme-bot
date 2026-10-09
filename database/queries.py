@@ -15,11 +15,7 @@ async def get_user(user_id: int) -> Optional[Dict[str, Any]]:
             return dict(row) if row else None
 
 async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str, Any]:
-    """Fetch existing user profile or initialize on first interaction."""
-    existing = await get_user(user_id)
-    if existing:
-        return existing
-
+    """Fetch existing user profile or initialize on first interaction (race-safe)."""
     async with get_db() as conn:
         await conn.execute(
             """
@@ -27,7 +23,8 @@ async def upsert_user(user_id: int, preferred_font: str = "default") -> Dict[str
                 user_id, preferred_font, watermark_file_id, watermark_text,
                 watermark_enabled, watermark_position, watermark_scale, watermark_opacity
             )
-            VALUES (?, ?, NULL, NULL, 0, 'bottom_right', 1.0, 0.8);
+            VALUES (?, ?, NULL, NULL, 0, 'bottom_right', 1.0, 0.8)
+            ON CONFLICT(user_id) DO NOTHING;
             """,
             (user_id, preferred_font),
         )
@@ -165,44 +162,23 @@ async def add_template(
     tags_str = (tags or "").strip()
 
     async with get_db() as conn:
-        # Check if template already exists by file_id
-        async with conn.execute(
-            "SELECT id FROM templates WHERE file_id = ?;", (clean_file_id,)
-        ) as cursor:
-            existing = await cursor.fetchone()
-            if existing:
-                t_id = existing["id"]
-                await conn.execute(
-                    """
-                    UPDATE templates
-                    SET title = ?, name = ?, tags = ?, file_unique_id = COALESCE(?, file_unique_id),
-                        media_type = ?, added_by = COALESCE(?, added_by),
-                        source_channel_id = COALESCE(?, source_channel_id),
-                        source_channel_title = COALESCE(?, source_channel_title)
-                    WHERE id = ?;
-                    """,
-                    (
-                        resolved_title,
-                        resolved_name,
-                        tags_str,
-                        file_unique_id,
-                        media_type,
-                        added_by,
-                        source_channel_id,
-                        source_channel_title,
-                        t_id,
-                    ),
-                )
-                await conn.commit()
-                return t_id
-
-        cursor = await conn.execute(
+        # Atomic upsert on UNIQUE(file_id): avoids SELECT-then-INSERT race under concurrency.
+        await conn.execute(
             """
             INSERT INTO templates (
                 file_id, file_unique_id, media_type, title, name, tags,
                 added_by, source_channel_id, source_channel_title, is_trending, usage_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            ON CONFLICT(file_id) DO UPDATE SET
+                title = excluded.title,
+                name = excluded.name,
+                tags = excluded.tags,
+                file_unique_id = COALESCE(excluded.file_unique_id, file_unique_id),
+                media_type = excluded.media_type,
+                added_by = COALESCE(excluded.added_by, added_by),
+                source_channel_id = COALESCE(excluded.source_channel_id, source_channel_id),
+                source_channel_title = COALESCE(excluded.source_channel_title, source_channel_title);
             """,
             (
                 clean_file_id,
@@ -218,7 +194,12 @@ async def add_template(
             ),
         )
         await conn.commit()
-        return cursor.lastrowid
+        # lastrowid is unreliable on conflict; re-select the row id.
+        async with conn.execute(
+            "SELECT id FROM templates WHERE file_id = ?;", (clean_file_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row["id"] if row else 0
 
 async def get_template_by_id(template_id: int) -> Optional[Dict[str, Any]]:
     """Retrieve template record by its primary key ID."""
@@ -365,7 +346,10 @@ async def resolve_alias(term: str) -> Optional[str]:
             return row["canonical_name"] if row else None
 
 async def add_alias(term: str, canonical: str) -> None:
-    """Register a new alias mapping."""
+    """Register a new alias mapping (stored in normalized form so lookups match)."""
+    # Local import: search_engine imports database.queries, so a top-level import would be circular.
+    from services.search_engine import normalize_query
+    clean_term = normalize_query(term) or term.strip().lower()
     async with get_db() as conn:
         await conn.execute(
             """
@@ -373,7 +357,7 @@ async def add_alias(term: str, canonical: str) -> None:
             VALUES (?, ?)
             ON CONFLICT(alias_term) DO UPDATE SET canonical_name = excluded.canonical_name;
             """,
-            (term.strip().lower(), canonical.strip()),
+            (clean_term, canonical.strip()),
         )
         await conn.commit()
 
@@ -383,6 +367,15 @@ async def get_all_aliases() -> List[Dict[str, Any]]:
         async with conn.execute("SELECT * FROM aliases ORDER BY alias_term ASC;") as cursor:
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+async def delete_alias(term: str) -> bool:
+    """Delete an alias mapping by term (normalized form); returns True if a row was removed."""
+    from services.search_engine import normalize_query
+    clean_term = normalize_query(term) or term.strip().lower()
+    async with get_db() as conn:
+        cursor = await conn.execute("DELETE FROM aliases WHERE alias_term = ?;", (clean_term,))
+        await conn.commit()
+        return cursor.rowcount > 0
 
 # ------------------------------------------------------------------------------
 # External Source Operations (Admin-Managed Meme Repositories)
@@ -417,3 +410,138 @@ async def remove_source(source_id: int) -> bool:
         await conn.execute("DELETE FROM sources WHERE id = ?;", (source_id,))
         await conn.commit()
         return True
+
+async def is_url_scraped(url: str) -> bool:
+    """Check whether a source URL was already scraped (dedupe for the background scraper)."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT 1 FROM scraped_urls WHERE url = ?;", (url.strip(),)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+async def mark_url_scraped(url: str, source_id: Optional[int]) -> None:
+    """Record a source URL as scraped (idempotent)."""
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO scraped_urls (url, source_id) VALUES (?, ?);",
+            (url.strip(), source_id),
+        )
+        await conn.commit()
+
+# ------------------------------------------------------------------------------
+# Favorites (user bookmarked templates)
+# ------------------------------------------------------------------------------
+
+async def add_favorite(user_id: int, template_id: int) -> None:
+    """Bookmark a template for a user (idempotent)."""
+    async with get_db() as conn:
+        await conn.execute(
+            "INSERT OR IGNORE INTO favorites (user_id, template_id) VALUES (?, ?);",
+            (user_id, template_id),
+        )
+        await conn.commit()
+
+async def remove_favorite(user_id: int, template_id: int) -> bool:
+    """Remove a bookmark; returns True if a row was deleted."""
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM favorites WHERE user_id = ? AND template_id = ?;",
+            (user_id, template_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+async def is_favorite(user_id: int, template_id: int) -> bool:
+    """Check whether a template is bookmarked by a user."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT 1 FROM favorites WHERE user_id = ? AND template_id = ?;",
+            (user_id, template_id),
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+async def get_favorites(user_id: int) -> List[Dict[str, Any]]:
+    """Return the user's bookmarked templates, most recently added first."""
+    async with get_db() as conn:
+        async with conn.execute(
+            """
+            SELECT t.* FROM templates t
+            JOIN favorites f ON f.template_id = t.id
+            WHERE f.user_id = ?
+            ORDER BY f.created_at DESC, f.rowid DESC;
+            """,
+            (user_id,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+            return [_format_template_dict(r) for r in rows]
+
+# ------------------------------------------------------------------------------
+# Drafts (one saved meme draft per user)
+# ------------------------------------------------------------------------------
+
+async def save_draft(user_id: int, data: dict) -> None:
+    """Persist one draft per user (REPLACE semantics via atomic upsert).
+
+    Extracts editor FSM keys with table defaults; booleans normalized to int.
+    file_id is required — without it nothing is written.
+    """
+    raw_file_id = data.get("file_id")
+    file_id = raw_file_id.strip() if isinstance(raw_file_id, str) else raw_file_id
+    if not file_id:
+        return
+
+    def _d(key: str, default: Any) -> Any:
+        v = data.get(key)
+        return default if v is None else v
+
+    def _b(key: str, default: int) -> int:
+        v = data.get(key)
+        return default if v is None else int(bool(v))
+
+    vals = {
+        "template_id": _d("template_id", None),
+        "file_id": file_id,
+        "text": _d("text", None),
+        "variant": _d("variant", "overlay"),
+        "text_color": _d("text_color", "white"),
+        "stroke_width": _d("stroke_width", 4),
+        "case_mode": _d("case_mode", "raw"),
+        "filter_name": _d("filter", None) or _d("filter_name", "none"),
+        "font_key": _d("font_key", None),
+        "watermark_enabled": _b("watermark_enabled", 1),
+        "watermark_pos": _d("watermark_pos", "bottom_right"),
+        "watermark_scale": _d("watermark_scale", 1.0),
+        "watermark_file_id": _d("watermark_file_id", None),
+        "watermark_text": _d("watermark_text", None),
+        "watermark_opacity": _d("watermark_opacity", 0.8),
+        "banner_id": _d("banner_id", None),
+        "is_clean": _b("is_clean", 0),
+    }
+    cols = ["user_id"] + list(vals.keys())
+    placeholders = ", ".join(["?"] * len(cols))
+    updates = ", ".join(f"{c} = excluded.{c}" for c in vals.keys())
+    async with get_db() as conn:
+        await conn.execute(
+            f"INSERT INTO drafts ({', '.join(cols)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(user_id) DO UPDATE SET {updates}, updated_at = CURRENT_TIMESTAMP;",
+            (user_id, *[vals[c] for c in vals.keys()]),
+        )
+        await conn.commit()
+
+async def get_draft(user_id: int) -> Optional[Dict[str, Any]]:
+    """Return the user's saved draft as a dict, or None if there is none."""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT * FROM drafts WHERE user_id = ?;", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+async def delete_draft(user_id: int) -> bool:
+    """Delete the user's saved draft; returns True if a row was deleted."""
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            "DELETE FROM drafts WHERE user_id = ?;", (user_id,)
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
